@@ -13,5 +13,8 @@ wheels/
 .env
 *.db
 
+# Datasets locales (CSV pesados, no se versionan)
+data/
+
 # Modelos entrenados
 models/
