@@ -4,6 +4,7 @@ guarda el modelo ganador en app/model/match_model.pkl.
 """
 
 import logging
+import sys
 from pathlib import Path
 
 import joblib
@@ -15,6 +16,14 @@ from sklearn.metrics import accuracy_score, log_loss
 from sklearn.model_selection import LeaveOneGroupOut
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from app.model.fifa_data import (  # noqa: E402
+    clean_worldcup_matches_team_name,
+    fifa_points_at,
+    load_fifa_points_lookup,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("train_model")
@@ -34,14 +43,6 @@ FEATURE_COLUMNS = [
     "round_encoded",
 ]
 
-# WorldCupMatches.csv tiene nombres de equipo que no coinciden literalmente
-# con country_full del ranking FIFA (aparte de tildes/errores de codificacion
-# ya presentes en el propio CSV, ver clean_team_name).
-TEAM_NAME_ALIASES = {
-    "Iran": "IR Iran",
-    "Czech Republic": "Czechia",
-}
-
 # groups=1, octavos=2, cuartos=3, semis=4, final=5. El partido por el tercer
 # puesto no estaba en la especificacion de 5 fases: se agrupa con semis (4)
 # porque ocurre en la misma ronda del calendario que la final.
@@ -57,24 +58,14 @@ ROUND_ENCODING = {
 }
 
 
-def clean_team_name(name: str) -> str:
-    name = name.strip()
-    if name.startswith('rn">'):
-        name = name[len('rn">') :]
-    if "Ivoire" in name:
-        # El CSV original ya trae el caracter de "Cote" corrupto en origen.
-        name = "Côte d'Ivoire"
-    return TEAM_NAME_ALIASES.get(name, name)
-
-
 def load_matches() -> pd.DataFrame:
     df = pd.read_csv(DATA_DIR / "WorldCupMatches.csv")
     df = df.dropna(subset=["Year", "MatchID"]).drop_duplicates(subset=["MatchID"])
     df["Year"] = df["Year"].astype(int)
     df = df[df["Year"] >= MIN_YEAR].copy()
 
-    df["Home Team Name"] = df["Home Team Name"].apply(clean_team_name)
-    df["Away Team Name"] = df["Away Team Name"].apply(clean_team_name)
+    df["Home Team Name"] = df["Home Team Name"].apply(clean_worldcup_matches_team_name)
+    df["Away Team Name"] = df["Away Team Name"].apply(clean_worldcup_matches_team_name)
     # El campo mezcla "03 Jun 1994" y "03 June 2002" segun el Mundial.
     df["match_date"] = pd.to_datetime(df["Datetime"].str.strip(), format="mixed", dayfirst=True)
     df["round_encoded"] = df["Stage"].map(ROUND_ENCODING)
@@ -87,29 +78,16 @@ def load_matches() -> pd.DataFrame:
     return df.sort_values("match_date").reset_index(drop=True)
 
 
-def load_fifa_points_lookup() -> dict[str, pd.Series]:
-    df = pd.read_csv(DATA_DIR / "fifa_ranking-2024-06-20.csv")
-    df["rank_date"] = pd.to_datetime(df["rank_date"])
-    return {
-        country: group.set_index("rank_date")["total_points"].sort_index()
-        for country, group in df.groupby("country_full")
-    }
-
-
-def fifa_points_at(lookup: dict[str, pd.Series], country: str, date: pd.Timestamp) -> float:
-    series = lookup.get(country)
-    if series is None:
+def _fifa_points_or_raise(country: str, date: pd.Timestamp) -> float:
+    points = fifa_points_at(country, date)
+    if points is None:
         raise KeyError(f"Sin ranking FIFA para el equipo {country!r}")
-    value = series.asof(date)
-    if pd.isna(value):
-        # El partido es anterior al primer ranking FIFA disponible para ese
-        # equipo: usamos el primer valor conocido como mejor aproximacion.
-        value = series.iloc[0]
-    return float(value)
+    return points
 
 
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
-    fifa_lookup = load_fifa_points_lookup()
+    # Carga y cachea el lookup de puntos FIFA una sola vez para todo el dataset.
+    load_fifa_points_lookup()
 
     # Prior neutro para el primer partido de un equipo en el torneo, cuando
     # todavia no tiene historial de goles propio ese Mundial.
@@ -132,8 +110,8 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
             float(np.mean(away_hist[-GOALS_AVG_WINDOW:])) if away_hist else global_goals_avg
         )
 
-        home_fifa_points = fifa_points_at(fifa_lookup, home, match["match_date"])
-        away_fifa_points = fifa_points_at(fifa_lookup, away, match["match_date"])
+        home_fifa_points = _fifa_points_or_raise(home, match["match_date"])
+        away_fifa_points = _fifa_points_or_raise(away, match["match_date"])
 
         home_goals = match["Home Team Goals"]
         away_goals = match["Away Team Goals"]
