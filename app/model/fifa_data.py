@@ -96,6 +96,31 @@ def fifa_points_at(canonical_country: str, date) -> float | None:
     return float(value)
 
 
+_team_initials_lookup: dict[str, str] | None = None
+
+
+def load_team_initials_lookup() -> dict[str, str]:
+    """Team Initials (WorldCupPlayers.csv, p.ej. "ARG") -> nombre canonico.
+
+    WorldCupPlayers.csv no trae el nombre del pais, solo las iniciales del
+    equipo. Se resuelven via WorldCupMatches.csv, que trae ambos.
+    """
+    global _team_initials_lookup
+    if _team_initials_lookup is None:
+        df = pd.read_csv(WORLDCUP_MATCHES_CSV)
+        df = df.dropna(subset=["Year"])
+        lookup: dict[str, str] = {}
+        for _, row in df.iterrows():
+            lookup[row["Home Team Initials"]] = clean_worldcup_matches_team_name(row["Home Team Name"])
+            lookup[row["Away Team Initials"]] = clean_worldcup_matches_team_name(row["Away Team Name"])
+        _team_initials_lookup = lookup
+    return _team_initials_lookup
+
+
+def team_initials_to_country(initials: str) -> str | None:
+    return load_team_initials_lookup().get(initials)
+
+
 _tournament_start_dates: dict[int, pd.Timestamp] | None = None
 
 

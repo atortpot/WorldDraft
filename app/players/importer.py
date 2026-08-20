@@ -1,13 +1,15 @@
 import csv
 import re
-import unicodedata
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 
+from sqlalchemy import case
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Player, PlayerPosition
+from app.model.fifa_data import team_initials_to_country, to_fifa_ranking_country
+from app.players.name_matching import NameMatcher, normalize_name
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 SQUADS_CSV = DATA_DIR / "squads.csv"
@@ -27,11 +29,6 @@ POSITION_MAP = {
 GOAL_EVENT_RE = re.compile(r"^G\d")
 IN_MINUTE_RE = re.compile(r"^I(\d+)")
 OUT_MINUTE_RE = re.compile(r"^O(\d+)")
-
-
-def normalize_name(name: str) -> str:
-    without_accents = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
-    return " ".join(without_accents.upper().split())
 
 
 def _parse_event(event: str) -> dict:
@@ -101,10 +98,11 @@ def _load_match_years() -> dict[str, int]:
     return match_years
 
 
-def _load_player_stats() -> dict[tuple[str, int], dict[str, int]]:
-    """Agrega goles y minutos reales por (nombre normalizado, año) desde WorldCupPlayers.csv."""
+def _load_player_stats() -> dict[tuple[str, int, str], dict[str, int]]:
+    """Agrega goles y minutos reales por (nombre normalizado, año, pais canonico)
+    desde WorldCupPlayers.csv. El pais sale de Team Initials via WorldCupMatches.csv."""
     match_years = _load_match_years()
-    stats: dict[tuple[str, int], dict[str, int]] = defaultdict(lambda: {"goals": 0, "minutes": 0})
+    stats: dict[tuple[str, int, str], dict[str, int]] = defaultdict(lambda: {"goals": 0, "minutes": 0})
 
     with PLAYERS_CSV.open(encoding="utf-8") as f:
         for row in csv.DictReader(f):
@@ -115,7 +113,11 @@ def _load_player_stats() -> dict[tuple[str, int], dict[str, int]]:
             player_name = row["Player Name"].strip()
             if not player_name:
                 continue
-            key = (normalize_name(player_name), year)
+
+            country = team_initials_to_country(row["Team Initials"].strip())
+            if country is None:
+                continue
+            key = (normalize_name(player_name), year, country)
 
             parsed_event = _parse_event(row["Event"])
             stats[key]["goals"] += parsed_event["goals"]
@@ -124,61 +126,27 @@ def _load_player_stats() -> dict[tuple[str, int], dict[str, int]]:
     return stats
 
 
-def _build_surname_index(
-    stats: dict[tuple[str, int], dict[str, int]],
-) -> dict[tuple[str, int], dict[str, int]]:
-    """Subconjunto de stats cuya clave de nombre es una sola palabra.
-
-    WorldCupPlayers.csv a veces solo registra el apellido (p.ej. "VALDERRAMA"
-    en vez de "Carlos Valderrama"). Estas entradas de una sola palabra son las
-    unicas candidatas seguras para el fallback por apellido.
-    """
-    return {key: value for key, value in stats.items() if " " not in key[0]}
-
-
-def _count_surnames_per_year(squad_rows: list[dict]) -> dict[int, Counter]:
-    counts: dict[int, Counter] = defaultdict(Counter)
-    for row in squad_rows:
-        year = int(row["year"])
-        surname = normalize_name(row["player_name"].strip().split()[-1])
-        counts[year][surname] += 1
-    return counts
-
-
 async def import_players(session: AsyncSession) -> dict:
     player_stats = _load_player_stats()
-    surname_stats = _build_surname_index(player_stats)
+    matcher = NameMatcher(player_stats)
 
     with SQUADS_CSV.open(encoding="utf-8") as f:
         squad_rows = [row for row in csv.DictReader(f) if int(row["year"]) >= MIN_YEAR]
 
-    surname_counts = _count_surnames_per_year(squad_rows)
+    for row in squad_rows:
+        canonical_country = to_fifa_ranking_country(row["country"].strip())
+        matcher.register_query_name(row["player_name"].strip(), int(row["year"]), canonical_country)
 
     rows_to_upsert = []
-    matched_full_name = 0
-    matched_surname_fallback = 0
-    unmatched = 0
 
     for row in squad_rows:
         year = int(row["year"])
         player_name = row["player_name"].strip()
         country = row["country"].strip()
+        canonical_country = to_fifa_ranking_country(country)
         position = POSITION_MAP[row["position"].strip()]
 
-        stats = player_stats.get((normalize_name(player_name), year))
-        if stats is not None:
-            matched_full_name += 1
-        else:
-            # Fallback: solo si el apellido identifica de forma unica a un
-            # jugador de la convocatoria ese año (evita atribuir goles/minutos
-            # de un jugador a otro homonimo).
-            surname = normalize_name(player_name.split()[-1])
-            if surname_counts[year][surname] == 1:
-                stats = surname_stats.get((surname, year))
-            if stats is not None:
-                matched_surname_fallback += 1
-            else:
-                unmatched += 1
+        stats = matcher.match(player_name, year, canonical_country)
 
         goals = stats["goals"] if stats else 0
         minutes = stats["minutes"] if stats else 0
@@ -204,14 +172,24 @@ async def import_players(session: AsyncSession) -> dict:
     for i in range(0, len(rows_to_upsert), BATCH_SIZE):
         batch = rows_to_upsert[i : i + BATCH_SIZE]
         stmt = pg_insert(Player).values(batch)
+        # Este import solo conoce WorldCupPlayers.csv (1994-2014). Si el
+        # jugador ya tiene un rating mejor (p.ej. de scripts/update_ratings_*
+        # con otras fuentes: Fjelstul, player_stats.csv 2026), no lo
+        # pisamos con datos peores (o en 0, para años que esta fuente ni
+        # siquiera cubre como 2018+). Se compara el conjunto completo, no
+        # campo a campo, para no mezclar goles de una fuente con minutos
+        # de otra.
+        keep_new = stmt.excluded.rating > Player.rating
         stmt = stmt.on_conflict_do_update(
             index_elements=["name", "country", "tournament_year"],
             set_={
                 "position": stmt.excluded.position,
-                "goals": stmt.excluded.goals,
-                "assists": stmt.excluded.assists,
-                "minutes_played": stmt.excluded.minutes_played,
-                "rating": stmt.excluded.rating,
+                "goals": case((keep_new, stmt.excluded.goals), else_=Player.goals),
+                "assists": case((keep_new, stmt.excluded.assists), else_=Player.assists),
+                "minutes_played": case(
+                    (keep_new, stmt.excluded.minutes_played), else_=Player.minutes_played
+                ),
+                "rating": case((keep_new, stmt.excluded.rating), else_=Player.rating),
             },
         )
         await session.execute(stmt)
@@ -219,7 +197,8 @@ async def import_players(session: AsyncSession) -> dict:
 
     return {
         "imported": len(rows_to_upsert),
-        "matched_full_name": matched_full_name,
-        "matched_surname_fallback": matched_surname_fallback,
-        "unmatched_without_stats": unmatched,
+        "matched_full_name": matcher.stats["exact"],
+        "matched_surname_fallback": matcher.stats["surname"],
+        "matched_fuzzy": matcher.stats["fuzzy"],
+        "unmatched_without_stats": matcher.stats["unmatched"],
     }
