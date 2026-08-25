@@ -39,6 +39,23 @@ export interface TeamStats {
   goals_avg: number
 }
 
+// Debe coincidir con DraftRound en app/db/models.py.
+export type TournamentRoundCode =
+  | 'group_1'
+  | 'group_2'
+  | 'group_3'
+  | 'round_of_16'
+  | 'quarter_final'
+  | 'semi_final'
+  | 'final'
+
+export type DraftRoundCode = TournamentRoundCode | 'eliminated' | 'champion'
+
+export interface Penalties {
+  took_place: boolean
+  won_by_team: boolean
+}
+
 export interface SimulationResult {
   opponent: {
     country: string
@@ -50,5 +67,10 @@ export interface SimulationResult {
   draw: number
   loss: number
   result: 'win' | 'draw' | 'loss'
+  penalties: Penalties | null
+  advanced: boolean
+  round: TournamentRoundCode
+  next_round: DraftRoundCode
+  tournament_finished: boolean
   explanation: MatchExplanationItem[]
 }

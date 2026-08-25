@@ -1,11 +1,13 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
-import type { SimulationResult } from '../api/types'
+import type { DraftRoundCode, SimulationResult } from '../api/types'
 
 interface DraftContextValue {
   sessionId: number | null
   setSessionId: (id: number | null) => void
-  result: SimulationResult | null
-  setResult: (result: SimulationResult | null) => void
+  currentRound: DraftRoundCode
+  lastResult: SimulationResult | null
+  matchHistory: SimulationResult[]
+  recordMatchResult: (result: SimulationResult) => void
   reset: () => void
 }
 
@@ -13,20 +15,30 @@ const DraftContext = createContext<DraftContextValue | null>(null)
 
 export function DraftProvider({ children }: { children: ReactNode }) {
   const [sessionId, setSessionId] = useState<number | null>(null)
-  const [result, setResult] = useState<SimulationResult | null>(null)
+  const [currentRound, setCurrentRound] = useState<DraftRoundCode>('group_1')
+  const [lastResult, setLastResult] = useState<SimulationResult | null>(null)
+  const [matchHistory, setMatchHistory] = useState<SimulationResult[]>([])
 
   const value = useMemo(
     () => ({
       sessionId,
       setSessionId,
-      result,
-      setResult,
+      currentRound,
+      lastResult,
+      matchHistory,
+      recordMatchResult: (result: SimulationResult) => {
+        setLastResult(result)
+        setCurrentRound(result.next_round)
+        setMatchHistory((prev) => [...prev, result])
+      },
       reset: () => {
         setSessionId(null)
-        setResult(null)
+        setCurrentRound('group_1')
+        setLastResult(null)
+        setMatchHistory([])
       },
     }),
-    [sessionId, result],
+    [sessionId, currentRound, lastResult, matchHistory],
   )
 
   return <DraftContext.Provider value={value}>{children}</DraftContext.Provider>

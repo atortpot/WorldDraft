@@ -44,7 +44,7 @@ export function DraftPage() {
       return
     }
     if (!currentPosition) {
-      navigate('/simulate')
+      navigate('/tournament')
       return
     }
 

@@ -3,6 +3,7 @@ calcular las metricas agregadas del equipo y simular el partido final contra
 un rival historico real.
 """
 
+import random
 from pathlib import Path
 from statistics import mean
 
@@ -10,7 +11,7 @@ import pandas as pd
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import DraftPick, DraftSession, DraftStatus, Player, PlayerPosition
+from app.db.models import DraftPick, DraftRound, DraftSession, DraftStatus, Player, PlayerPosition
 from app.model.fifa_data import (
     clean_worldcup_matches_team_name,
     fifa_points_at,
@@ -33,13 +34,60 @@ FORMATION = {
 }
 TEAM_SIZE = sum(FORMATION.values())
 
+# Torneo de 7 partidos: 3 de grupos (fase en la que un empate no elimina) +
+# 4 eliminatorias directas. GROUP_1/2/3 comparten fase (misma fuerza de
+# rival, mismo round_encoded) y solo se distinguen para llevar la cuenta de
+# en que partido de grupos va la sesion.
+ROUND_ORDER = [
+    DraftRound.GROUP_1,
+    DraftRound.GROUP_2,
+    DraftRound.GROUP_3,
+    DraftRound.ROUND_OF_16,
+    DraftRound.QUARTER_FINAL,
+    DraftRound.SEMI_FINAL,
+    DraftRound.FINAL,
+]
+KNOCKOUT_ROUNDS = {
+    DraftRound.ROUND_OF_16,
+    DraftRound.QUARTER_FINAL,
+    DraftRound.SEMI_FINAL,
+    DraftRound.FINAL,
+}
+
+# Debe coincidir con ROUND_ENCODING de scripts/train_model.py (con el que se
+# entreno el modelo): groups=1, octavos=2, cuartos=3, semis=4, final=5.
+ROUND_TO_MODEL_ENCODING = {
+    DraftRound.GROUP_1: 1,
+    DraftRound.GROUP_2: 1,
+    DraftRound.GROUP_3: 1,
+    DraftRound.ROUND_OF_16: 2,
+    DraftRound.QUARTER_FINAL: 3,
+    DraftRound.SEMI_FINAL: 4,
+    DraftRound.FINAL: 5,
+}
+
+# Percentil (sobre todos los (equipo, torneo) de WorldCupMatches.csv
+# ordenados por puntos FIFA) del que se sortea el rival de cada ronda: en
+# grupos, nivel medio; en eliminatorias, cada vez mas alto.
+ROUND_STRENGTH_BANDS: dict[DraftRound, tuple[float, float]] = {
+    DraftRound.GROUP_1: (0.35, 0.65),
+    DraftRound.GROUP_2: (0.35, 0.65),
+    DraftRound.GROUP_3: (0.35, 0.65),
+    DraftRound.ROUND_OF_16: (0.55, 0.75),
+    DraftRound.QUARTER_FINAL: (0.70, 0.85),
+    DraftRound.SEMI_FINAL: (0.82, 0.93),
+    DraftRound.FINAL: (0.90, 1.0),
+}
+
 
 class DraftError(Exception):
     """Error de validacion del draft (formacion invalida, jugador repetido, etc.)."""
 
 
 async def start_draft(user_id: int, db: AsyncSession) -> int:
-    draft_session = DraftSession(user_id=user_id, status=DraftStatus.IN_PROGRESS)
+    draft_session = DraftSession(
+        user_id=user_id, status=DraftStatus.IN_PROGRESS, current_round=DraftRound.GROUP_1
+    )
     db.add(draft_session)
     await db.commit()
     await db.refresh(draft_session)
@@ -209,11 +257,41 @@ def _get_team_appearances() -> pd.DataFrame:
     return _team_appearances
 
 
-async def get_random_historical_opponent(db: AsyncSession) -> dict:
+_team_appearances_with_points: pd.DataFrame | None = None
+
+
+def _load_team_appearances_with_points() -> pd.DataFrame:
+    """Un (equipo, torneo) por fila con sus puntos FIFA, ordenados de menor a
+    mayor, para poder sortear rivales dentro de una franja de fuerza."""
+    team_years = _get_team_appearances()[["team", "Year"]].drop_duplicates().reset_index(drop=True)
+    team_years["fifa_points"] = [
+        fifa_points_at(row.team, tournament_start_date(int(row.Year))) or 0.0
+        for row in team_years.itertuples()
+    ]
+    return team_years.sort_values("fifa_points").reset_index(drop=True)
+
+
+def _get_team_appearances_with_points() -> pd.DataFrame:
+    global _team_appearances_with_points
+    if _team_appearances_with_points is None:
+        _team_appearances_with_points = _load_team_appearances_with_points()
+    return _team_appearances_with_points
+
+
+def _select_opponent_team_year(round_: DraftRound) -> tuple[str, int]:
+    ranked = _get_team_appearances_with_points()
+    lo_pct, hi_pct = ROUND_STRENGTH_BANDS[round_]
+    total = len(ranked)
+    lo_idx = int(total * lo_pct)
+    hi_idx = max(int(total * hi_pct), lo_idx + 1)
+    band = ranked.iloc[lo_idx:hi_idx]
+    chosen = band.sample(1).iloc[0]
+    return chosen["team"], int(chosen["Year"])
+
+
+async def get_opponent_for_round(round_: DraftRound, db: AsyncSession) -> dict:
+    team, year = _select_opponent_team_year(round_)
     appearances = _get_team_appearances()
-    team_years = appearances[["team", "Year"]].drop_duplicates()
-    chosen = team_years.sample(1).iloc[0]
-    team, year = chosen["team"], int(chosen["Year"])
 
     team_matches = appearances[(appearances["team"] == team) & (appearances["Year"] == year)]
     goals_avg = float(team_matches["goals_scored"].mean())
@@ -244,12 +322,17 @@ async def get_random_historical_opponent(db: AsyncSession) -> dict:
 
 
 async def simulate_draft_match(draft_session_id: int, db: AsyncSession) -> dict:
+    draft_session = await _get_session_or_raise(draft_session_id, db)
+    if draft_session.current_round in (DraftRound.ELIMINATED, DraftRound.CHAMPION):
+        raise DraftError("El torneo ya ha terminado para este draft")
+
     team = await get_draft_team(draft_session_id, db)
     if len(team) != TEAM_SIZE:
         raise DraftError(f"El equipo debe tener {TEAM_SIZE} jugadores para simular (tiene {len(team)})")
 
+    current_round = draft_session.current_round
     team_stats = await calculate_team_stats(draft_session_id, db)
-    opponent = await get_random_historical_opponent(db)
+    opponent = await get_opponent_for_round(current_round, db)
 
     team_a_stats = {
         "fifa_points": team_stats["fifa_points_avg"],
@@ -261,9 +344,39 @@ async def simulate_draft_match(draft_session_id: int, db: AsyncSession) -> dict:
         "player_rating_avg": opponent["player_rating_avg"],
         "goals_avg": opponent["goals_avg"],
     }
+    round_encoded = ROUND_TO_MODEL_ENCODING[current_round]
 
-    outcome = simulate_match(team_a_stats, team_b_stats)
-    explanation = explain_match(team_a_stats, team_b_stats)
+    outcome = simulate_match(team_a_stats, team_b_stats, round_encoded=round_encoded)
+    explanation = explain_match(team_a_stats, team_b_stats, round_encoded=round_encoded)
+
+    is_knockout = current_round in KNOCKOUT_ROUNDS
+    penalties = None
+    advanced: bool
+
+    if outcome["result"] == "win":
+        advanced = True
+    elif outcome["result"] == "loss":
+        advanced = False
+    else:
+        # Empate: en grupos cuenta como avance; en eliminatorias se resuelve
+        # a penaltis, sin ventaja para ningun lado (50/50).
+        if is_knockout:
+            won_penalties = random.random() < 0.5
+            penalties = {"took_place": True, "won_by_team": won_penalties}
+            advanced = won_penalties
+        else:
+            advanced = True
+
+    if not advanced:
+        draft_session.current_round = DraftRound.ELIMINATED
+    elif current_round == DraftRound.FINAL:
+        draft_session.current_round = DraftRound.CHAMPION
+    else:
+        draft_session.current_round = ROUND_ORDER[ROUND_ORDER.index(current_round) + 1]
+
+    await db.commit()
+
+    tournament_finished = draft_session.current_round in (DraftRound.ELIMINATED, DraftRound.CHAMPION)
 
     return {
         "opponent": {"country": opponent["country"], "tournament_year": opponent["tournament_year"]},
@@ -273,5 +386,10 @@ async def simulate_draft_match(draft_session_id: int, db: AsyncSession) -> dict:
         "draw": outcome["draw"],
         "loss": outcome["loss"],
         "result": outcome["result"],
+        "penalties": penalties,
+        "advanced": advanced,
+        "round": current_round.value,
+        "next_round": draft_session.current_round.value,
+        "tournament_finished": tournament_finished,
         "explanation": explanation,
     }

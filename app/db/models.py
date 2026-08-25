@@ -27,6 +27,21 @@ class TournamentRound(str, enum.Enum):
     FINAL = "final"
 
 
+class DraftRound(str, enum.Enum):
+    """Fase del torneo de 7 partidos en la que se encuentra un DraftSession:
+    3 de grupos + 4 eliminatorias, mas los dos estados terminales."""
+
+    GROUP_1 = "group_1"
+    GROUP_2 = "group_2"
+    GROUP_3 = "group_3"
+    ROUND_OF_16 = "round_of_16"
+    QUARTER_FINAL = "quarter_final"
+    SEMI_FINAL = "semi_final"
+    FINAL = "final"
+    ELIMINATED = "eliminated"
+    CHAMPION = "champion"
+
+
 class MatchResult(str, enum.Enum):
     WIN = "win"
     LOSS = "loss"
@@ -76,6 +91,11 @@ class DraftSession(Base):
     status: Mapped[DraftStatus] = mapped_column(
         SqlEnum(DraftStatus, name="draft_status"),
         default=DraftStatus.IN_PROGRESS,
+        nullable=False,
+    )
+    current_round: Mapped[DraftRound] = mapped_column(
+        SqlEnum(DraftRound, name="draft_round"),
+        default=DraftRound.GROUP_1,
         nullable=False,
     )
 
