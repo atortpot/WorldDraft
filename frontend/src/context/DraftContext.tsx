@@ -1,9 +1,10 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
-import type { DraftRoundCode, SimulationResult } from '../api/types'
+import type { DraftRoundCode, FormationName, SimulationResult } from '../api/types'
 
 interface DraftContextValue {
   sessionId: number | null
-  setSessionId: (id: number | null) => void
+  formation: FormationName | null
+  startSession: (sessionId: number, formation: FormationName) => void
   currentRound: DraftRoundCode
   lastResult: SimulationResult | null
   matchHistory: SimulationResult[]
@@ -15,6 +16,7 @@ const DraftContext = createContext<DraftContextValue | null>(null)
 
 export function DraftProvider({ children }: { children: ReactNode }) {
   const [sessionId, setSessionId] = useState<number | null>(null)
+  const [formation, setFormation] = useState<FormationName | null>(null)
   const [currentRound, setCurrentRound] = useState<DraftRoundCode>('group_1')
   const [lastResult, setLastResult] = useState<SimulationResult | null>(null)
   const [matchHistory, setMatchHistory] = useState<SimulationResult[]>([])
@@ -22,7 +24,11 @@ export function DraftProvider({ children }: { children: ReactNode }) {
   const value = useMemo(
     () => ({
       sessionId,
-      setSessionId,
+      formation,
+      startSession: (newSessionId: number, newFormation: FormationName) => {
+        setSessionId(newSessionId)
+        setFormation(newFormation)
+      },
       currentRound,
       lastResult,
       matchHistory,
@@ -33,12 +39,13 @@ export function DraftProvider({ children }: { children: ReactNode }) {
       },
       reset: () => {
         setSessionId(null)
+        setFormation(null)
         setCurrentRound('group_1')
         setLastResult(null)
         setMatchHistory([])
       },
     }),
-    [sessionId, currentRound, lastResult, matchHistory],
+    [sessionId, formation, currentRound, lastResult, matchHistory],
   )
 
   return <DraftContext.Provider value={value}>{children}</DraftContext.Provider>

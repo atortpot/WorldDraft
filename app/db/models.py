@@ -47,8 +47,25 @@ class MatchResult(str, enum.Enum):
     LOSS = "loss"
 
 
-# Compartido por Player.position y DraftPick.position_slot: ambos representan
-# la misma noción de posición y deben mapear al mismo tipo ENUM de Postgres.
+class Formation(str, enum.Enum):
+    """Las 12 formaciones disponibles. El layout exacto de cada una (lista
+    ordenada de slots) vive en app/game/formations.py, no aqui: este enum
+    solo identifica la formacion elegida por la sesion."""
+
+    F_4_3_3 = "4-3-3"
+    F_4_4_2 = "4-4-2"
+    F_4_3_2_1 = "4-3-2-1"
+    F_3_5_2 = "3-5-2"
+    F_4_2_3_1 = "4-2-3-1"
+    F_4_5_1 = "4-5-1"
+    F_5_3_2 = "5-3-2"
+    F_5_4_1 = "5-4-1"
+    F_3_4_3 = "3-4-3"
+    F_4_1_4_1 = "4-1-4-1"
+    F_4_4_2_DIAMOND = "4-4-2 Diamante"
+    F_3_4_2_1 = "3-4-2-1"
+
+
 position_enum = SqlEnum(PlayerPosition, name="player_position")
 
 
@@ -98,6 +115,16 @@ class DraftSession(Base):
         default=DraftRound.GROUP_1,
         nullable=False,
     )
+    # Selecion/año sorteados por GET /roll, pendientes de resolver con un
+    # pick o un pass. Null cuando no hay tirada activa (recien creado el
+    # draft, o justo despues de resolver la anterior).
+    current_roll_country: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    current_roll_year: Mapped[int | None] = mapped_column(nullable=True)
+    passes_used: Mapped[int] = mapped_column(default=0, nullable=False)
+    # Elegida por el usuario en POST /start, sin default: determina el
+    # layout de slots (ver app/game/formations.py) contra el que se valida
+    # cada pick.
+    formation: Mapped[Formation] = mapped_column(SqlEnum(Formation, name="formation"), nullable=False)
 
     user: Mapped["User"] = relationship(back_populates="draft_sessions")
     picks: Mapped[list["DraftPick"]] = relationship(back_populates="draft_session")
@@ -110,7 +137,11 @@ class DraftPick(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     draft_session_id: Mapped[int] = mapped_column(ForeignKey("draft_sessions.id"), nullable=False)
     player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
-    position_slot: Mapped[PlayerPosition] = mapped_column(position_enum, nullable=False)
+    # Indice (0-10) dentro de la lista ordenada de slots de la formacion de
+    # la sesion (app/game/formations.py). No un PlayerPosition: una misma
+    # formacion puede tener varios slots del mismo tipo (p.ej. dos CB), y
+    # cada uno debe poder ocuparse por separado.
+    slot_index: Mapped[int] = mapped_column(nullable=False)
 
     draft_session: Mapped["DraftSession"] = relationship(back_populates="picks")
     player: Mapped["Player"] = relationship(back_populates="draft_picks")

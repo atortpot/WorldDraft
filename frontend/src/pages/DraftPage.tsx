@@ -1,86 +1,74 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { apiErrorMessage, getCandidates, pickPlayer } from '../api/client'
-import { CandidateCard } from '../components/CandidateCard'
+import { apiErrorMessage, getTeam, passRoll, pickPlayer, rollDraft } from '../api/client'
+import { BoxScore } from '../components/BoxScore'
+import { Pitch } from '../components/Pitch'
 import { useDraft } from '../context/DraftContext'
-import type { Candidate, PositionAbbreviation } from '../api/types'
+import { isSlotCompatible } from '../lib/formations'
+import type { RollPlayer, RollResult, TeamMember } from '../api/types'
 
-interface PositionSlot {
-  code: PositionAbbreviation
-  label: string
-  count: number
-}
+// Debe coincidir con TEAM_SIZE en app/game/draft_service.py.
+const TEAM_SIZE = 11
 
-// Debe coincidir con FORMATION en app/game/draft_service.py: 1 GK, 4 DF, 4 MF, 2 FW.
-const POSITIONS: PositionSlot[] = [
-  { code: 'GK', label: 'Portero', count: 1 },
-  { code: 'DF', label: 'Defensa', count: 4 },
-  { code: 'MF', label: 'Centrocampista', count: 4 },
-  { code: 'FW', label: 'Delantero', count: 2 },
-]
-
-interface PickedSummary {
-  name: string
-  position: PositionAbbreviation
+const POSITION_LABELS: Record<string, string> = {
+  GK: 'Portero',
+  DF: 'Defensa',
+  MF: 'Centrocampista',
+  FW: 'Delantero',
 }
 
 export function DraftPage() {
   const navigate = useNavigate()
-  const { sessionId } = useDraft()
+  const { sessionId, formation } = useDraft()
 
-  const [positionIndex, setPositionIndex] = useState(0)
-  const [slotInPosition, setSlotInPosition] = useState(0)
-  const [picks, setPicks] = useState<PickedSummary[]>([])
-  const [candidates, setCandidates] = useState<Candidate[]>([])
-  const [loading, setLoading] = useState(true)
+  const [team, setTeam] = useState<TeamMember[]>([])
+  const [roll, setRoll] = useState<RollResult | null>(null)
+  const [selectedPlayer, setSelectedPlayer] = useState<RollPlayer | null>(null)
+  const [loadingTeam, setLoadingTeam] = useState(true)
+  const [rolling, setRolling] = useState(false)
   const [picking, setPicking] = useState(false)
+  const [passing, setPassing] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const currentPosition = POSITIONS[positionIndex]
-
   useEffect(() => {
-    if (!sessionId) {
+    if (!sessionId || !formation) {
       navigate('/')
       return
     }
-    if (!currentPosition) {
-      navigate('/tournament')
-      return
-    }
+    getTeam(sessionId)
+      .then(setTeam)
+      .catch((err) => setError(apiErrorMessage(err)))
+      .finally(() => setLoadingTeam(false))
+  }, [sessionId, formation, navigate])
 
-    let cancelled = false
-    setLoading(true)
+  if (!sessionId || !formation) return null
+
+  async function handleRoll() {
+    setRolling(true)
     setError(null)
-    getCandidates(sessionId, currentPosition.code)
-      .then((data) => {
-        if (!cancelled) setCandidates(data)
-      })
-      .catch((err) => {
-        if (!cancelled) setError(apiErrorMessage(err))
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-
-    return () => {
-      cancelled = true
+    setSelectedPlayer(null)
+    try {
+      const result = await rollDraft(sessionId!)
+      setRoll(result)
+    } catch (err) {
+      setError(apiErrorMessage(err))
+    } finally {
+      setRolling(false)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, positionIndex, slotInPosition])
+  }
 
-  async function handlePick(candidate: Candidate) {
-    if (!sessionId || !currentPosition) return
+  async function handleSlotClick(slotIndex: number) {
+    if (!selectedPlayer) return
     setPicking(true)
     setError(null)
     try {
-      await pickPlayer(sessionId, candidate.id, currentPosition.code)
-      setPicks((prev) => [...prev, { name: candidate.name, position: currentPosition.code }])
-
-      if (slotInPosition + 1 >= currentPosition.count) {
-        setPositionIndex((i) => i + 1)
-        setSlotInPosition(0)
-      } else {
-        setSlotInPosition((s) => s + 1)
+      await pickPlayer(sessionId!, selectedPlayer.id, slotIndex)
+      const updatedTeam = await getTeam(sessionId!)
+      setTeam(updatedTeam)
+      setRoll(null)
+      setSelectedPlayer(null)
+      if (updatedTeam.length >= TEAM_SIZE) {
+        navigate('/tournament')
       }
     } catch (err) {
       setError(apiErrorMessage(err))
@@ -89,64 +77,127 @@ export function DraftPage() {
     }
   }
 
-  const totalSlots = POSITIONS.reduce((sum, p) => sum + p.count, 0)
+  async function handlePass() {
+    setPassing(true)
+    setError(null)
+    try {
+      await passRoll(sessionId!)
+      setRoll(null)
+      setSelectedPlayer(null)
+    } catch (err) {
+      setError(apiErrorMessage(err))
+    } finally {
+      setPassing(false)
+    }
+  }
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-4xl flex-col gap-6 px-4 py-10">
+    <div className="mx-auto flex min-h-screen max-w-5xl flex-col gap-6 px-4 py-10">
       <header className="flex flex-col gap-2">
-        <h1 className="text-2xl font-bold text-slate-50">Arma tu equipo</h1>
+        <h1 className="text-2xl font-bold text-slate-50">Arma tu equipo ({formation})</h1>
         <p className="text-sm text-slate-400">
-          {picks.length} / {totalSlots} jugadores elegidos
+          {team.length} / {TEAM_SIZE} jugadores elegidos
         </p>
         <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800">
           <div
             className="h-full rounded-full bg-emerald-500 transition-all"
-            style={{ width: `${(picks.length / totalSlots) * 100}%` }}
+            style={{ width: `${(team.length / TEAM_SIZE) * 100}%` }}
           />
         </div>
       </header>
 
-      {currentPosition && (
+      {error && <p className="text-sm text-red-400">{error}</p>}
+
+      {!roll ? (
+        <div className="flex flex-col items-center gap-4 py-6">
+          <p className="text-center text-slate-400">
+            Lanza una tirada para ver una seleccion y su Mundial, y elige a uno de sus
+            jugadores para tu equipo.
+          </p>
+          <button
+            type="button"
+            onClick={handleRoll}
+            disabled={rolling}
+            className="rounded-lg bg-emerald-500 px-6 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {rolling ? 'Tirando...' : '🎲 Tirar de nuevo'}
+          </button>
+        </div>
+      ) : (
         <section className="flex flex-col gap-4">
-          <h2 className="text-lg font-semibold text-slate-200">
-            {currentPosition.label} ({slotInPosition + 1}/{currentPosition.count})
-          </h2>
+          <div className="flex flex-col items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 py-4 text-center">
+            <h2 className="text-xl font-bold text-slate-50">
+              🎲 Te ha salido: {roll.country} {roll.tournament_year}
+            </h2>
+            {selectedPlayer ? (
+              <p className="text-sm text-emerald-400">
+                Toca un slot iluminado del campo para colocar a{' '}
+                <span className="font-semibold">{selectedPlayer.name}</span>
+              </p>
+            ) : (
+              <p className="text-sm text-slate-400">Elige a uno de sus jugadores</p>
+            )}
+          </div>
 
-          {error && <p className="text-sm text-red-400">{error}</p>}
+          <ul className="flex flex-wrap justify-center gap-2">
+            {roll.players.map((player) => {
+              const isSelected = selectedPlayer?.id === player.id
+              const hasCompatibleSlot = roll.free_slots.some((slot) =>
+                isSlotCompatible(slot.position, player.position),
+              )
+              return (
+                <li key={player.id}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPlayer(player)}
+                    disabled={picking || !hasCompatibleSlot}
+                    className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-left transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                      isSelected
+                        ? 'border-emerald-500 bg-emerald-500/10'
+                        : 'border-slate-800 bg-slate-900 hover:border-slate-600'
+                    }`}
+                  >
+                    <span className="text-sm font-medium text-slate-100">{player.name}</span>
+                    <span className="text-xs text-slate-500">{POSITION_LABELS[player.position]}</span>
+                    <span className="rounded-full bg-slate-800 px-1.5 py-0.5 text-xs font-medium text-emerald-400">
+                      {player.rating.toFixed(1)}
+                    </span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
 
-          {loading ? (
-            <p className="text-slate-400">Buscando candidatos...</p>
-          ) : (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              {candidates.map((candidate) => (
-                <CandidateCard
-                  key={candidate.id}
-                  candidate={candidate}
-                  disabled={picking}
-                  onPick={handlePick}
-                />
-              ))}
-            </div>
-          )}
+          <div className="flex justify-center">
+            <button
+              type="button"
+              onClick={handlePass}
+              disabled={passing || roll.passes_remaining === 0}
+              className="rounded-lg border border-slate-700 px-6 py-3 font-semibold text-slate-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {passing
+                ? 'Pasando...'
+                : `Pasar tirada (quedan ${roll.passes_remaining}/${roll.max_passes})`}
+            </button>
+          </div>
         </section>
       )}
 
-      {picks.length > 0 && (
-        <section className="flex flex-col gap-2 border-t border-slate-800 pt-4">
-          <h2 className="text-sm font-medium uppercase tracking-wide text-slate-500">
-            Tu equipo hasta ahora
-          </h2>
-          <ul className="flex flex-wrap gap-2">
-            {picks.map((pick, index) => (
-              <li
-                key={index}
-                className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-300"
-              >
-                {pick.position} · {pick.name}
-              </li>
-            ))}
-          </ul>
-        </section>
+      {loadingTeam ? (
+        <p className="text-center text-slate-400">Cargando equipo...</p>
+      ) : (
+        <div className="flex flex-col items-start gap-6 sm:flex-row sm:justify-center">
+          <div className="w-full max-w-sm">
+            <Pitch
+              formation={formation}
+              team={team}
+              selectedPlayer={selectedPlayer}
+              onSlotClick={handleSlotClick}
+              disabled={picking}
+            />
+          </div>
+          <BoxScore formation={formation} team={team} />
+        </div>
       )}
     </div>
   )

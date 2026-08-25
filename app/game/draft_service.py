@@ -8,10 +8,11 @@ from pathlib import Path
 from statistics import mean
 
 import pandas as pd
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import DraftPick, DraftRound, DraftSession, DraftStatus, Player, PlayerPosition
+from app.db.models import DraftPick, DraftRound, DraftSession, DraftStatus, Formation, Player
+from app.game.formations import is_slot_compatible, slots_for
 from app.model.fifa_data import (
     clean_worldcup_matches_team_name,
     fifa_points_at,
@@ -25,14 +26,9 @@ DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 WORLDCUP_MATCHES_CSV = DATA_DIR / "WorldCupMatches.csv"
 MIN_YEAR = 1994
 
-# Formacion fija: 1 portero, 4 defensas, 4 mediocampistas, 2 delanteros.
-FORMATION = {
-    PlayerPosition.GOALKEEPER: 1,
-    PlayerPosition.DEFENDER: 4,
-    PlayerPosition.MIDFIELDER: 4,
-    PlayerPosition.FORWARD: 2,
-}
-TEAM_SIZE = sum(FORMATION.values())
+# Toda formacion tiene exactamente 11 slots (ver app/game/formations.py).
+TEAM_SIZE = 11
+MAX_PASSES = 3
 
 # Torneo de 7 partidos: 3 de grupos (fase en la que un empate no elimina) +
 # 4 eliminatorias directas. GROUP_1/2/3 comparten fase (misma fuerza de
@@ -84,9 +80,12 @@ class DraftError(Exception):
     """Error de validacion del draft (formacion invalida, jugador repetido, etc.)."""
 
 
-async def start_draft(user_id: int, db: AsyncSession) -> int:
+async def start_draft(user_id: int, formation: Formation, db: AsyncSession) -> int:
     draft_session = DraftSession(
-        user_id=user_id, status=DraftStatus.IN_PROGRESS, current_round=DraftRound.GROUP_1
+        user_id=user_id,
+        status=DraftStatus.IN_PROGRESS,
+        current_round=DraftRound.GROUP_1,
+        formation=formation,
     )
     db.add(draft_session)
     await db.commit()
@@ -101,85 +100,170 @@ async def _get_session_or_raise(draft_session_id: int, db: AsyncSession) -> Draf
     return draft_session
 
 
-async def get_draft_candidates(
-    draft_session_id: int,
-    position: PlayerPosition,
-    year_from: int,
-    year_to: int,
-    db: AsyncSession,
-) -> list[Player]:
-    await _get_session_or_raise(draft_session_id, db)
-    already_picked = select(DraftPick.player_id).where(DraftPick.draft_session_id == draft_session_id)
+async def _existing_picks(draft_session_id: int, db: AsyncSession) -> list[DraftPick]:
+    result = await db.execute(select(DraftPick).where(DraftPick.draft_session_id == draft_session_id))
+    return list(result.scalars().all())
 
+
+async def _free_slots(draft_session: DraftSession, db: AsyncSession) -> list[dict]:
+    """Slots de la formacion de la sesion (indice + tipo de posicion) que
+    todavia no tienen jugador, en el orden de la formacion."""
+    filled_indices = {pick.slot_index for pick in await _existing_picks(draft_session.id, db)}
+    return [
+        {"slot_index": index, "position": position}
+        for index, position in enumerate(slots_for(draft_session.formation))
+        if index not in filled_indices
+    ]
+
+
+async def _available_players(
+    draft_session_id: int, country: str, year: int, db: AsyncSession
+) -> list[Player]:
+    already_picked = select(DraftPick.player_id).where(DraftPick.draft_session_id == draft_session_id)
     stmt = (
         select(Player)
         .where(
-            Player.position == position,
-            Player.tournament_year.between(year_from, year_to),
+            Player.country == country,
+            Player.tournament_year == year,
             Player.id.notin_(already_picked),
         )
-        .order_by(func.random())
-        .limit(4)
+        .order_by(Player.position, Player.rating.desc())
     )
     result = await db.execute(stmt)
     return list(result.scalars().all())
 
 
-async def pick_player(
-    draft_session_id: int,
-    player_id: int,
-    position_slot: PlayerPosition,
-    db: AsyncSession,
-) -> DraftPick:
+async def _draw_country_year(draft_session_id: int, db: AsyncSession) -> tuple[str, int]:
+    """Sortea una (seleccion, año) que todavia tenga al menos un jugador sin
+    elegir en esta sesion, entre todas las combinaciones de la tabla players."""
+    already_picked = select(DraftPick.player_id).where(DraftPick.draft_session_id == draft_session_id)
+    stmt = (
+        select(Player.country, Player.tournament_year)
+        .where(Player.id.notin_(already_picked))
+        .distinct()
+    )
+    combos = (await db.execute(stmt)).all()
+    if not combos:
+        raise DraftError("No quedan jugadores disponibles para sortear")
+    country, year = random.choice(combos)
+    return country, year
+
+
+async def roll_draft(draft_session_id: int, db: AsyncSession) -> dict:
+    """Devuelve la tirada activa de la sesion, sorteando una nueva si no
+    habia ninguna pendiente. Idempotente mientras no se resuelva con un pick
+    o un pass: llamar varias veces devuelve siempre la misma tirada."""
     draft_session = await _get_session_or_raise(draft_session_id, db)
     if draft_session.status != DraftStatus.IN_PROGRESS:
         raise DraftError("Este draft ya ha finalizado")
 
+    if draft_session.current_roll_country is None:
+        country, year = await _draw_country_year(draft_session_id, db)
+        draft_session.current_roll_country = country
+        draft_session.current_roll_year = year
+        await db.commit()
+    else:
+        country, year = draft_session.current_roll_country, draft_session.current_roll_year
+
+    return {
+        "country": country,
+        "tournament_year": year,
+        "players": await _available_players(draft_session_id, country, year, db),
+        "free_slots": await _free_slots(draft_session, db),
+        "passes_used": draft_session.passes_used,
+        "passes_remaining": MAX_PASSES - draft_session.passes_used,
+    }
+
+
+async def pass_roll(draft_session_id: int, db: AsyncSession) -> dict:
+    draft_session = await _get_session_or_raise(draft_session_id, db)
+    if draft_session.status != DraftStatus.IN_PROGRESS:
+        raise DraftError("Este draft ya ha finalizado")
+    if draft_session.current_roll_country is None:
+        raise DraftError("No hay ninguna tirada activa que pasar: llama a /roll primero")
+    if draft_session.passes_used >= MAX_PASSES:
+        raise DraftError(f"Ya has usado los {MAX_PASSES} pases disponibles")
+
+    draft_session.passes_used += 1
+    draft_session.current_roll_country = None
+    draft_session.current_roll_year = None
+    await db.commit()
+
+    return {
+        "passes_used": draft_session.passes_used,
+        "passes_remaining": MAX_PASSES - draft_session.passes_used,
+    }
+
+
+async def pick_player(
+    draft_session_id: int,
+    player_id: int,
+    slot_index: int,
+    db: AsyncSession,
+) -> dict:
+    draft_session = await _get_session_or_raise(draft_session_id, db)
+    if draft_session.status != DraftStatus.IN_PROGRESS:
+        raise DraftError("Este draft ya ha finalizado")
+    if draft_session.current_roll_country is None:
+        raise DraftError("No hay ninguna tirada activa: llama a /roll primero")
+
+    slots = slots_for(draft_session.formation)
+    if slot_index < 0 or slot_index >= len(slots):
+        raise DraftError(f"El slot {slot_index} no existe en la formacion {draft_session.formation.value}")
+    slot_position = slots[slot_index]
+
     player = await db.get(Player, player_id)
     if player is None:
         raise DraftError(f"El jugador {player_id} no existe")
-    if player.position != position_slot:
+    if (
+        player.country != draft_session.current_roll_country
+        or player.tournament_year != draft_session.current_roll_year
+    ):
         raise DraftError(
-            f"{player.name} juega de {player.position.value}, no se puede alinear en {position_slot.value}"
+            f"{player.name} no pertenece a la tirada actual "
+            f"({draft_session.current_roll_country} {draft_session.current_roll_year})"
+        )
+    if not is_slot_compatible(slot_position, player.position):
+        raise DraftError(
+            f"{player.name} juega de {player.position.value} y no puede ocupar un slot {slot_position}"
         )
 
-    existing_picks = (
-        (await db.execute(select(DraftPick).where(DraftPick.draft_session_id == draft_session_id)))
-        .scalars()
-        .all()
-    )
+    existing_picks = await _existing_picks(draft_session_id, db)
 
     if any(pick.player_id == player_id for pick in existing_picks):
         raise DraftError(f"{player.name} ya fue elegido en este draft")
+    if any(pick.slot_index == slot_index for pick in existing_picks):
+        raise DraftError(f"El slot {slot_position} (#{slot_index}) ya esta ocupado")
 
-    slot_count = sum(1 for pick in existing_picks if pick.position_slot == position_slot)
-    if slot_count >= FORMATION[position_slot]:
-        raise DraftError(f"Ya se cubrieron los {FORMATION[position_slot]} puestos de {position_slot.value}")
-
-    draft_pick = DraftPick(draft_session_id=draft_session_id, player_id=player_id, position_slot=position_slot)
+    draft_pick = DraftPick(draft_session_id=draft_session_id, player_id=player_id, slot_index=slot_index)
     db.add(draft_pick)
+
+    draft_session.current_roll_country = None
+    draft_session.current_roll_year = None
 
     if len(existing_picks) + 1 == TEAM_SIZE:
         draft_session.status = DraftStatus.FINISHED
 
     await db.commit()
     await db.refresh(draft_pick)
-    return draft_pick
+    return {"pick_id": draft_pick.id, "player_id": draft_pick.player_id, "slot_index": slot_index, "slot_position": slot_position}
 
 
 async def get_draft_team(draft_session_id: int, db: AsyncSession) -> list[dict]:
-    await _get_session_or_raise(draft_session_id, db)
+    draft_session = await _get_session_or_raise(draft_session_id, db)
+    slots = slots_for(draft_session.formation)
     stmt = (
         select(DraftPick, Player)
         .join(Player, DraftPick.player_id == Player.id)
         .where(DraftPick.draft_session_id == draft_session_id)
-        .order_by(DraftPick.id)
+        .order_by(DraftPick.slot_index)
     )
     result = await db.execute(stmt)
     return [
         {
             "pick_id": pick.id,
-            "position_slot": pick.position_slot.value,
+            "slot_index": pick.slot_index,
+            "slot_position": slots[pick.slot_index],
             "player_id": player.id,
             "name": player.name,
             "country": player.country,

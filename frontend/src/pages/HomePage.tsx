@@ -1,27 +1,13 @@
-import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { apiErrorMessage, startDraft } from '../api/client'
 import { useDraft } from '../context/DraftContext'
 
 export function HomePage() {
   const navigate = useNavigate()
-  const { setSessionId, reset } = useDraft()
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const { reset } = useDraft()
 
-  async function handleStart() {
-    setLoading(true)
-    setError(null)
-    try {
-      reset()
-      const sessionId = await startDraft()
-      setSessionId(sessionId)
-      navigate('/draft')
-    } catch (err) {
-      setError(apiErrorMessage(err))
-    } finally {
-      setLoading(false)
-    }
+  function handleStart() {
+    reset()
+    navigate('/formation')
   }
 
   return (
@@ -34,12 +20,10 @@ export function HomePage() {
       <button
         type="button"
         onClick={handleStart}
-        disabled={loading}
-        className="rounded-lg bg-emerald-500 px-6 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+        className="rounded-lg bg-emerald-500 px-6 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400"
       >
-        {loading ? 'Creando draft...' : 'Comenzar draft'}
+        Comenzar draft
       </button>
-      {error && <p className="text-sm text-red-400">{error}</p>}
     </div>
   )
 }

@@ -3,6 +3,7 @@ import { DraftProvider } from './context/DraftContext'
 import { ChampionPage } from './pages/ChampionPage'
 import { DraftPage } from './pages/DraftPage'
 import { EliminatedPage } from './pages/EliminatedPage'
+import { FormationPage } from './pages/FormationPage'
 import { HomePage } from './pages/HomePage'
 import { TournamentPage } from './pages/TournamentPage'
 
@@ -11,6 +12,7 @@ function App() {
     <DraftProvider>
       <Routes>
         <Route path="/" element={<HomePage />} />
+        <Route path="/formation" element={<FormationPage />} />
         <Route path="/draft" element={<DraftPage />} />
         <Route path="/tournament" element={<TournamentPage />} />
         <Route path="/tournament/champion" element={<ChampionPage />} />
