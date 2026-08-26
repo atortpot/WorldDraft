@@ -14,8 +14,8 @@ const MODES: { value: DraftMode; label: string; description: string }[] = [
   },
   {
     value: 'almanac',
-    label: 'Modo Almanaque',
-    description: 'El rating se oculta ("???"): confia en tu memoria futbolistica.',
+    label: 'Folgar Mode',
+    description: 'El rating se oculta: confia en tu memoria futbolistica.',
   },
 ]
 
