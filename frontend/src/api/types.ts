@@ -111,6 +111,28 @@ export interface Penalties {
   won_by_team: boolean
 }
 
+export interface ChemistryNationDetail {
+  country: string
+  count: number
+  bonus: number
+}
+
+export interface ChemistryEraDetail {
+  era: string
+  count: number
+  bonus: number
+}
+
+export interface Chemistry {
+  nation_bonus: number
+  era_bonus: number
+  total_bonus: number
+  chemistry_details: {
+    nation: ChemistryNationDetail | null
+    era: ChemistryEraDetail | null
+  }
+}
+
 export interface SimulationResult {
   opponent: {
     country: string
@@ -128,4 +150,5 @@ export interface SimulationResult {
   next_round: DraftRoundCode
   tournament_finished: boolean
   explanation: MatchExplanationItem[]
+  chemistry: Chemistry
 }

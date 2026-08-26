@@ -42,6 +42,29 @@ export function MatchResultPanel({ result, onNext }: Props) {
         <p className={`text-sm font-semibold ${outcomeColor}`}>{outcomeLabel}</p>
       </header>
 
+      <section className="flex flex-col items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 p-4 text-center">
+        <p className="text-xs uppercase tracking-wide text-slate-500">Quimica de equipo</p>
+        {result.chemistry.total_bonus > 0 ? (
+          <>
+            <p className="text-2xl font-bold text-emerald-400">
+              +{Math.round(result.chemistry.total_bonus * 100)}% rating
+            </p>
+            <p className="text-sm text-slate-400">
+              {[
+                result.chemistry.chemistry_details.nation &&
+                  `${result.chemistry.chemistry_details.nation.count} jugadores de ${result.chemistry.chemistry_details.nation.country} (+${Math.round(result.chemistry.chemistry_details.nation.bonus * 100)}%)`,
+                result.chemistry.chemistry_details.era &&
+                  `${result.chemistry.chemistry_details.era.count} jugadores de los ${result.chemistry.chemistry_details.era.era} (+${Math.round(result.chemistry.chemistry_details.era.bonus * 100)}%)`,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </p>
+          </>
+        ) : (
+          <p className="text-sm text-slate-500">Sin bonificacion de quimica en este equipo.</p>
+        )}
+      </section>
+
       <section className="grid grid-cols-3 gap-4 text-center">
         <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
           <p className="text-xs uppercase tracking-wide text-slate-500">Victoria</p>

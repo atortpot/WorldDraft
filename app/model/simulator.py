@@ -39,8 +39,15 @@ def _get_model():
     return _model
 
 
-def _build_feature_vector(team_a_stats: dict, team_b_stats: dict, round_encoded: int) -> np.ndarray:
-    home_fifa_points = team_a_stats["fifa_points"]
+def _build_feature_vector(
+    team_a_stats: dict, team_b_stats: dict, round_encoded: int, chemistry_bonus: float = 0.0
+) -> np.ndarray:
+    # La bonificacion de quimica (ver DraftSession/calculate_team_stats en
+    # app/game/draft_service.py) se aplica aqui, sobre los fifa_points
+    # efectivos que ve el modelo, no sobre el team_a_stats que se devuelve
+    # en la respuesta de la API: no se toca el modelo serializado ni sus
+    # coeficientes, solo el input que recibe.
+    home_fifa_points = team_a_stats["fifa_points"] * (1 + chemistry_bonus)
     away_fifa_points = team_b_stats["fifa_points"]
     return np.array(
         [
@@ -60,16 +67,20 @@ def simulate_match(
     team_a_stats: dict,
     team_b_stats: dict,
     round_encoded: int = DEFAULT_ROUND_ENCODED,
+    chemistry_bonus: float = 0.0,
 ) -> dict:
     """Simula un partido entre dos equipos.
 
     team_a_stats / team_b_stats: dicts con "fifa_points" y "goals_avg" (y
     opcionalmente "player_rating_avg", que el modelo actual todavia no usa
     como feature: fue entrenado solo con puntos FIFA, media de goles y
-    ronda del torneo).
+    ronda del torneo). chemistry_bonus (0.10 = +10%) sube los fifa_points
+    efectivos de team_a antes de construir el vector de features: es la
+    via por la que la quimica de equipo influye en el resultado sin
+    reentrenar el modelo.
     """
     model = _get_model()
-    features = _build_feature_vector(team_a_stats, team_b_stats, round_encoded)
+    features = _build_feature_vector(team_a_stats, team_b_stats, round_encoded, chemistry_bonus)
 
     probabilities = model.predict_proba(features)[0]
     proba_by_class = dict(zip(model.classes_, probabilities))
@@ -87,6 +98,7 @@ def explain_match(
     team_a_stats: dict,
     team_b_stats: dict,
     round_encoded: int = DEFAULT_ROUND_ENCODED,
+    chemistry_bonus: float = 0.0,
 ) -> list[dict]:
     """Desglosa que variables inclinaron la prediccion, y hacia que lado.
 
@@ -104,7 +116,7 @@ def explain_match(
     if scaler is None or clf is None or not hasattr(clf, "coef_"):
         return []
 
-    features = _build_feature_vector(team_a_stats, team_b_stats, round_encoded)
+    features = _build_feature_vector(team_a_stats, team_b_stats, round_encoded, chemistry_bonus)
     scaled = scaler.transform(features)[0]
 
     class_index = {cls: i for i, cls in enumerate(clf.classes_)}

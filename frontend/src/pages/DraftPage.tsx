@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiErrorMessage, getTeam, passRoll, pickPlayer, rollDraft } from '../api/client'
 import { BoxScore } from '../components/BoxScore'
+import { ChemistryPanel } from '../components/ChemistryPanel'
 import { Pitch } from '../components/Pitch'
 import { useDraft } from '../context/DraftContext'
 import { isSlotCompatible } from '../lib/formations'
@@ -186,18 +187,21 @@ export function DraftPage() {
       {loadingTeam ? (
         <p className="text-center text-slate-400">Cargando equipo...</p>
       ) : (
-        <div className="flex flex-col items-start gap-6 sm:flex-row sm:justify-center">
-          <div className="w-full max-w-sm">
-            <Pitch
-              formation={formation}
-              team={team}
-              selectedPlayer={selectedPlayer}
-              onSlotClick={handleSlotClick}
-              disabled={picking}
-            />
+        <>
+          <div className="flex flex-col items-start gap-6 sm:flex-row sm:justify-center">
+            <div className="w-full max-w-sm">
+              <Pitch
+                formation={formation}
+                team={team}
+                selectedPlayer={selectedPlayer}
+                onSlotClick={handleSlotClick}
+                disabled={picking}
+              />
+            </div>
+            <BoxScore formation={formation} team={team} />
           </div>
-          <BoxScore formation={formation} team={team} />
-        </div>
+          <ChemistryPanel team={team} />
+        </>
       )}
     </div>
   )

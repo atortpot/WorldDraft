@@ -4,6 +4,7 @@ un rival historico real.
 """
 
 import random
+from collections import Counter
 from pathlib import Path
 from statistics import mean
 
@@ -285,6 +286,64 @@ def _goals_per_match(goals: int, minutes_played: int) -> float:
     return goals / games_played
 
 
+# Umbral minimo de jugadores de una misma seleccion -> bonus sobre el rating
+# medio del equipo. Se evalua de mayor a menor umbral y se aplica solo el
+# primero que se cumple (no son acumulables entre si).
+NATION_CHEMISTRY_TIERS: list[tuple[int, float]] = [(7, 0.15), (5, 0.10), (3, 0.05)]
+
+# Decadas de juego (no las decadas de calendario reales: agrupacion propia
+# del juego, tal como se definio el sistema de quimica).
+DECADE_BY_YEAR: dict[int, str] = {
+    1994: "1990s",
+    1998: "1990s",
+    2002: "2000s",
+    2006: "2000s",
+    2010: "2000s",
+    2014: "2010s",
+    2018: "2010s",
+    2022: "2020s",
+    2026: "2020s",
+}
+ERA_CHEMISTRY_THRESHOLD = 4
+ERA_CHEMISTRY_BONUS = 0.05
+
+
+def _calculate_chemistry(team: list[dict]) -> dict:
+    """Bonus de rating por quimica de seleccion + quimica de epoca,
+    acumulables entre si (no dentro de cada una: solo cuenta el tramo mas
+    alto que se alcanza)."""
+    nation_counts = Counter(member["country"] for member in team)
+    nation_country, nation_count = nation_counts.most_common(1)[0]
+
+    nation_bonus = 0.0
+    nation_detail = None
+    for threshold, bonus in NATION_CHEMISTRY_TIERS:
+        if nation_count >= threshold:
+            nation_bonus = bonus
+            nation_detail = {"country": nation_country, "count": nation_count, "bonus": bonus}
+            break
+
+    era_counts = Counter(
+        DECADE_BY_YEAR[member["tournament_year"]]
+        for member in team
+        if member["tournament_year"] in DECADE_BY_YEAR
+    )
+    era_bonus = 0.0
+    era_detail = None
+    if era_counts:
+        era_name, era_count = era_counts.most_common(1)[0]
+        if era_count >= ERA_CHEMISTRY_THRESHOLD:
+            era_bonus = ERA_CHEMISTRY_BONUS
+            era_detail = {"era": era_name, "count": era_count, "bonus": era_bonus}
+
+    return {
+        "nation_bonus": nation_bonus,
+        "era_bonus": era_bonus,
+        "total_bonus": round(nation_bonus + era_bonus, 2),
+        "chemistry_details": {"nation": nation_detail, "era": era_detail},
+    }
+
+
 async def calculate_team_stats(draft_session_id: int, db: AsyncSession) -> dict:
     team = await get_draft_team(draft_session_id, db)
     if not team:
@@ -302,10 +361,14 @@ async def calculate_team_stats(draft_session_id: int, db: AsyncSession) -> dict:
         if points is not None:
             fifa_points.append(points)
 
+    chemistry = _calculate_chemistry(team)
+    base_rating_avg = mean(ratings) if ratings else 0.0
+
     return {
         "fifa_points_avg": mean(fifa_points) if fifa_points else 0.0,
-        "rating_avg": mean(ratings) if ratings else 0.0,
+        "rating_avg": base_rating_avg * (1 + chemistry["total_bonus"]),
         "goals_avg": mean(goals_per_match) if goals_per_match else 0.0,
+        "chemistry": chemistry,
     }
 
 
@@ -429,9 +492,14 @@ async def simulate_draft_match(draft_session_id: int, db: AsyncSession) -> dict:
         "goals_avg": opponent["goals_avg"],
     }
     round_encoded = ROUND_TO_MODEL_ENCODING[current_round]
+    chemistry_bonus = team_stats["chemistry"]["total_bonus"]
 
-    outcome = simulate_match(team_a_stats, team_b_stats, round_encoded=round_encoded)
-    explanation = explain_match(team_a_stats, team_b_stats, round_encoded=round_encoded)
+    outcome = simulate_match(
+        team_a_stats, team_b_stats, round_encoded=round_encoded, chemistry_bonus=chemistry_bonus
+    )
+    explanation = explain_match(
+        team_a_stats, team_b_stats, round_encoded=round_encoded, chemistry_bonus=chemistry_bonus
+    )
 
     is_knockout = current_round in KNOCKOUT_ROUNDS
     penalties = None
@@ -476,4 +544,5 @@ async def simulate_draft_match(draft_session_id: int, db: AsyncSession) -> dict:
         "next_round": draft_session.current_round.value,
         "tournament_finished": tournament_finished,
         "explanation": explanation,
+        "chemistry": team_stats["chemistry"],
     }
