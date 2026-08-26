@@ -2,7 +2,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.security import hash_password, verify_password
+from app.auth.security import hash_password, validate_password, verify_password
 from app.db.models import User
 
 
@@ -12,6 +12,10 @@ async def get_user_by_email(email: str, db: AsyncSession) -> User | None:
 
 
 async def register_user(email: str, password: str, db: AsyncSession) -> User:
+    password_errors = validate_password(password)
+    if password_errors:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="; ".join(password_errors))
+
     if await get_user_by_email(email, db) is not None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Ya existe una cuenta con ese email"

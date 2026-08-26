@@ -1,5 +1,7 @@
-"""Hashing de contraseñas (bcrypt) y firma/verificacion de JWT."""
+"""Hashing de contraseñas (bcrypt), validacion de fuerza de password y
+firma/verificacion de JWT."""
 
+import re
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -9,6 +11,28 @@ from app.config import settings
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
+
+PASSWORD_MIN_LENGTH = 8
+_SPECIAL_CHAR_RE = re.compile(r"[^A-Za-z0-9]")
+
+
+def validate_password(password: str) -> list[str]:
+    """Reglas de fuerza de la contraseña. Debe coincidir exactamente con
+    passwordSchema en frontend/src/lib/validation.ts (mismas 4 reglas, mismo
+    orden) para que ambas capas se comporten igual.
+
+    Devuelve la lista de reglas incumplidas; vacia si la password es valida.
+    """
+    errors = []
+    if len(password) < PASSWORD_MIN_LENGTH:
+        errors.append(f"Debe tener al menos {PASSWORD_MIN_LENGTH} caracteres")
+    if not any(c.isupper() for c in password):
+        errors.append("Debe incluir al menos una mayuscula")
+    if not any(c.islower() for c in password):
+        errors.append("Debe incluir al menos una minuscula")
+    if not _SPECIAL_CHAR_RE.search(password):
+        errors.append("Debe incluir al menos un caracter especial")
+    return errors
 
 
 def hash_password(password: str) -> str:

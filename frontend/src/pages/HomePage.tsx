@@ -12,9 +12,9 @@ export function HomePage() {
     navigate('/formation')
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    await logout()
     reset()
-    logout()
     navigate('/login', { replace: true })
   }
 

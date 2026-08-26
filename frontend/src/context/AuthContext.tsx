@@ -1,51 +1,66 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
-import { getMe, login as apiLogin, register as apiRegister, setAuthToken } from '../api/client'
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { cookieLogin, cookieLogout, getMe, register as apiRegister } from '../api/client'
 
 interface AuthUser {
   id: number
   email: string
 }
 
+type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated'
+
 interface AuthContextValue {
-  token: string | null
+  status: AuthStatus
   user: AuthUser | null
   login: (email: string, password: string) => Promise<void>
   register: (email: string, password: string) => Promise<void>
-  logout: () => void
+  logout: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  // El token solo vive en memoria (estado de React): nunca se persiste en
-  // localStorage/sessionStorage, asi que se pierde al recargar la pagina.
-  const [token, setToken] = useState<string | null>(null)
+  const [status, setStatus] = useState<AuthStatus>('loading')
   const [user, setUser] = useState<AuthUser | null>(null)
 
-  async function applyToken(accessToken: string) {
-    setAuthToken(accessToken)
-    setToken(accessToken)
-    const me = await getMe()
-    setUser({ id: me.id, email: me.email })
-  }
+  // Al arrancar la app, la unica fuente de verdad sobre si hay sesion es la
+  // cookie httpOnly: no hay nada persistido en el propio frontend que
+  // consultar, asi que se pregunta al backend.
+  useEffect(() => {
+    getMe()
+      .then((me) => {
+        setUser({ id: me.id, email: me.email })
+        setStatus('authenticated')
+      })
+      .catch(() => {
+        setStatus('unauthenticated')
+      })
+  }, [])
 
   const value = useMemo(
     () => ({
-      token,
+      status,
       user,
       login: async (email: string, password: string) => {
-        await applyToken(await apiLogin(email, password))
+        const me = await cookieLogin(email, password)
+        setUser({ id: me.id, email: me.email })
+        setStatus('authenticated')
       },
       register: async (email: string, password: string) => {
-        await applyToken(await apiRegister(email, password))
+        // /auth/register solo crea la cuenta (queda tambien disponible via
+        // Bearer para Swagger); el login por cookie es lo que establece la
+        // sesion persistida que usa el frontend.
+        await apiRegister(email, password)
+        const me = await cookieLogin(email, password)
+        setUser({ id: me.id, email: me.email })
+        setStatus('authenticated')
       },
-      logout: () => {
-        setAuthToken(null)
-        setToken(null)
+      logout: async () => {
+        await cookieLogout()
         setUser(null)
+        setStatus('unauthenticated')
       },
     }),
-    [token, user],
+    [status, user],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

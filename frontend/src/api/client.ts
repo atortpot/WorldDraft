@@ -10,32 +10,23 @@ import type {
 
 // Rutas relativas: el proxy de Vite (vite.config.ts) las reenvia a la API
 // FastAPI en http://localhost:8000 durante el desarrollo.
-const api = axios.create()
+// withCredentials: true para que el navegador mande la cookie httpOnly de
+// sesion (worlddraftauth) en cada peticion -- la persistencia de sesion
+// depende enteramente de esa cookie, el frontend ya no gestiona ningun
+// token en memoria ni cabecera Authorization.
+const api = axios.create({ withCredentials: true })
 
-// Token JWT en memoria (variable de modulo, nunca localStorage/sessionStorage).
-// AuthContext llama a setAuthToken() en login/register/logout; el interceptor
-// lo adjunta a cada peticion saliente.
-let authToken: string | null = null
-
-export function setAuthToken(token: string | null): void {
-  authToken = token
+export async function register(email: string, password: string): Promise<void> {
+  await api.post('/auth/register', { email, password })
 }
 
-api.interceptors.request.use((config) => {
-  if (authToken) {
-    config.headers.Authorization = `Bearer ${authToken}`
-  }
-  return config
-})
-
-export async function register(email: string, password: string): Promise<string> {
-  const { data } = await api.post<{ access_token: string }>('/auth/register', { email, password })
-  return data.access_token
+export async function cookieLogin(email: string, password: string): Promise<MeResponse> {
+  const { data } = await api.post<MeResponse>('/auth/cookie/login', { email, password })
+  return data
 }
 
-export async function login(email: string, password: string): Promise<string> {
-  const { data } = await api.post<{ access_token: string }>('/auth/login', { email, password })
-  return data.access_token
+export async function cookieLogout(): Promise<void> {
+  await api.post('/auth/cookie/logout')
 }
 
 export async function getMe(): Promise<MeResponse> {

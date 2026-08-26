@@ -1,42 +1,52 @@
 import { useState, type FormEvent } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { apiErrorMessage } from '../api/client'
 import { useAuth } from '../context/AuthContext'
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-const MIN_PASSWORD_LENGTH = 8
+import { collectRegisterErrors } from '../lib/validation'
 
 type Mode = 'login' | 'register'
 
 export function LoginPage() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { login, register } = useAuth()
+  const { status, login, register } = useAuth()
 
   const [mode, setMode] = useState<Mode>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [errors, setErrors] = useState<string[]>([])
 
-  function validate(): string | null {
-    if (!EMAIL_RE.test(email)) return 'Introduce un email valido.'
-    if (password.length < MIN_PASSWORD_LENGTH) {
-      return `La contraseña debe tener al menos ${MIN_PASSWORD_LENGTH} caracteres.`
+  // Si el arranque de la app ya confirmo que hay una cookie de sesion
+  // valida, no hace falta pasar por el formulario.
+  if (status === 'authenticated') {
+    const from = (location.state as { from?: string } | null)?.from ?? '/'
+    return <Navigate to={from} replace />
+  }
+
+  function validate(): string[] {
+    if (mode === 'register') {
+      return collectRegisterErrors(email, password)
     }
-    return null
+    // En login no se valida la fuerza de la password (bloquearia a
+    // usuarios ya registrados con contraseñas anteriores a esta regla):
+    // solo una comprobacion minima de que los campos no esten vacios.
+    const empty: string[] = []
+    if (!email) empty.push('Introduce tu email.')
+    if (!password) empty.push('Introduce tu contraseña.')
+    return empty
   }
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    const validationError = validate()
-    if (validationError) {
-      setError(validationError)
+    const validationErrors = validate()
+    if (validationErrors.length > 0) {
+      setErrors(validationErrors)
       return
     }
 
     setLoading(true)
-    setError(null)
+    setErrors([])
     try {
       if (mode === 'login') {
         await login(email, password)
@@ -46,7 +56,7 @@ export function LoginPage() {
       const from = (location.state as { from?: string } | null)?.from ?? '/'
       navigate(from, { replace: true })
     } catch (err) {
-      setError(apiErrorMessage(err))
+      setErrors([apiErrorMessage(err)])
     } finally {
       setLoading(false)
     }
@@ -60,7 +70,10 @@ export function LoginPage() {
         <div className="flex gap-2 rounded-lg bg-slate-950 p-1">
           <button
             type="button"
-            onClick={() => setMode('login')}
+            onClick={() => {
+              setMode('login')
+              setErrors([])
+            }}
             className={`flex-1 rounded-md py-1.5 text-sm font-semibold transition ${
               mode === 'login' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
             }`}
@@ -69,7 +82,10 @@ export function LoginPage() {
           </button>
           <button
             type="button"
-            onClick={() => setMode('register')}
+            onClick={() => {
+              setMode('register')
+              setErrors([])
+            }}
             className={`flex-1 rounded-md py-1.5 text-sm font-semibold transition ${
               mode === 'register' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
             }`}
@@ -99,11 +115,19 @@ export function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
               autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
               className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-emerald-500"
-              placeholder="Minimo 8 caracteres"
+              placeholder={mode === 'register' ? 'Minimo 8 caracteres, Aa1!' : 'Tu contraseña'}
             />
           </label>
 
-          {error && <p className="text-sm text-red-400">{error}</p>}
+          {errors.length > 0 && (
+            <ul className="flex flex-col gap-1">
+              {errors.map((message) => (
+                <li key={message} className="text-sm text-red-400">
+                  {message}
+                </li>
+              ))}
+            </ul>
+          )}
 
           <button
             type="submit"
