@@ -1,11 +1,37 @@
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { apiErrorMessage, getActiveDraft } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { useDraft } from '../context/DraftContext'
 
 export function HomePage() {
   const navigate = useNavigate()
-  const { reset } = useDraft()
+  const { reset, resumeSession } = useDraft()
   const { user, logout } = useAuth()
+  const [checkingSession, setCheckingSession] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    getActiveDraft()
+      .then((active) => {
+        if (cancelled || !active) return
+        resumeSession(active.draft_session_id, active.formation, active.current_round)
+        navigate(active.free_slots.length > 0 ? '/draft' : '/tournament', { replace: true })
+      })
+      .catch((err) => {
+        if (!cancelled) setError(apiErrorMessage(err))
+      })
+      .finally(() => {
+        if (!cancelled) setCheckingSession(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   function handleStart() {
     reset()
@@ -16,6 +42,14 @@ export function HomePage() {
     await logout()
     reset()
     navigate('/login', { replace: true })
+  }
+
+  if (checkingSession) {
+    return (
+      <div className="flex min-h-screen items-center justify-center text-slate-400">
+        Comprobando si tienes una partida en curso...
+      </div>
+    )
   }
 
   return (
@@ -38,6 +72,7 @@ export function HomePage() {
         Elige tu once ideal entre las estrellas de los Mundiales y enfrentalo contra un
         rival historico real.
       </p>
+      {error && <p className="text-sm text-red-400">{error}</p>}
       <button
         type="button"
         onClick={handleStart}

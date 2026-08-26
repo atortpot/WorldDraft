@@ -1,11 +1,12 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
-import type { DraftMode, DraftRoundCode, FormationName, SimulationResult } from '../api/types'
+import type { DraftMode, DraftRoundCode, FormationName, SimulationResult, TournamentRoundCode } from '../api/types'
 
 interface DraftContextValue {
   sessionId: number | null
   formation: FormationName | null
   mode: DraftMode
   startSession: (sessionId: number, formation: FormationName, mode: DraftMode) => void
+  resumeSession: (sessionId: number, formation: FormationName, currentRound: TournamentRoundCode) => void
   currentRound: DraftRoundCode
   lastResult: SimulationResult | null
   matchHistory: SimulationResult[]
@@ -32,6 +33,24 @@ export function DraftProvider({ children }: { children: ReactNode }) {
         setSessionId(newSessionId)
         setFormation(newFormation)
         setMode(newMode)
+      },
+      resumeSession: (
+        newSessionId: number,
+        newFormation: FormationName,
+        newCurrentRound: TournamentRoundCode,
+      ) => {
+        // Recuperada tras GET /game/draft/active: el servidor no guarda el
+        // modo Almanaque/Clasico (es puramente de presentacion, ver
+        // DraftMode) ni el historial detallado de partidos ya jugados
+        // (nunca se persistio), asi que ambos vuelven a su valor por
+        // defecto. current_round si viene del servidor, para reanudar el
+        // torneo en la ronda correcta.
+        setSessionId(newSessionId)
+        setFormation(newFormation)
+        setMode('classic')
+        setCurrentRound(newCurrentRound)
+        setLastResult(null)
+        setMatchHistory([])
       },
       currentRound,
       lastResult,

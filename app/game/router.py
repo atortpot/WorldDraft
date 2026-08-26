@@ -40,6 +40,14 @@ async def start_draft_endpoint(
     return StartDraftResponse(draft_session_id=session_id)
 
 
+@router.get("/active")
+async def get_active_draft_endpoint(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await draft_service.get_active_draft_session(current_user.id, db)
+
+
 @router.get("/{session_id}/roll")
 async def roll_endpoint(
     session_id: int,

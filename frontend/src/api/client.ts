@@ -1,5 +1,6 @@
 import axios from 'axios'
 import type {
+  ActiveDraftSession,
   FormationName,
   MeResponse,
   PassResult,
@@ -37,6 +38,11 @@ export async function getMe(): Promise<MeResponse> {
 export async function startDraft(formation: FormationName): Promise<number> {
   const { data } = await api.post<{ draft_session_id: number }>('/game/draft/start', { formation })
   return data.draft_session_id
+}
+
+export async function getActiveDraft(): Promise<ActiveDraftSession | null> {
+  const { data } = await api.get<ActiveDraftSession | null>('/game/draft/active')
+  return data
 }
 
 export async function rollDraft(sessionId: number): Promise<RollResult> {

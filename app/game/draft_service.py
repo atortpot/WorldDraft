@@ -287,6 +287,38 @@ async def get_draft_team(draft_session_id: int, user_id: int, db: AsyncSession) 
     ]
 
 
+async def get_active_draft_session(user_id: int, db: AsyncSession) -> dict | None:
+    """La sesion mas reciente del usuario que todavia no ha terminado, para
+    poder recuperarla tras recargar la pagina.
+
+    "Activa" se define por current_round, no por status: status pasa a
+    FINISHED en cuanto se completan los 11 picks, pero la sesion sigue en
+    curso mientras dura el torneo (current_round avanza hasta eliminated o
+    champion). Si hay varias sesiones activas (p.ej. el usuario abandono un
+    draft a medias y empezo otro), se devuelve la mas reciente.
+    """
+    stmt = (
+        select(DraftSession)
+        .where(
+            DraftSession.user_id == user_id,
+            DraftSession.current_round.notin_([DraftRound.ELIMINATED, DraftRound.CHAMPION]),
+        )
+        .order_by(DraftSession.created_at.desc(), DraftSession.id.desc())
+        .limit(1)
+    )
+    draft_session = (await db.execute(stmt)).scalars().first()
+    if draft_session is None:
+        return None
+
+    return {
+        "draft_session_id": draft_session.id,
+        "current_round": draft_session.current_round.value,
+        "formation": draft_session.formation.value,
+        "picks": await get_draft_team(draft_session.id, user_id, db),
+        "free_slots": await _free_slots(draft_session, db),
+    }
+
+
 def _goals_per_match(goals: int, minutes_played: int) -> float:
     if minutes_played <= 0:
         return 0.0

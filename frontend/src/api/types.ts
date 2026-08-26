@@ -117,6 +117,14 @@ export type TournamentRoundCode =
 
 export type DraftRoundCode = TournamentRoundCode | 'eliminated' | 'champion'
 
+export interface ActiveDraftSession {
+  draft_session_id: number
+  current_round: TournamentRoundCode
+  formation: FormationName
+  picks: TeamMember[]
+  free_slots: FreeSlot[]
+}
+
 export interface Penalties {
   took_place: boolean
   won_by_team: boolean
