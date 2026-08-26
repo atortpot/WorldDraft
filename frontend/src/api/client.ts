@@ -1,19 +1,50 @@
 import axios from 'axios'
-import type { FormationName, PassResult, RollResult, SimulationResult, TeamMember } from './types'
+import type {
+  FormationName,
+  MeResponse,
+  PassResult,
+  RollResult,
+  SimulationResult,
+  TeamMember,
+} from './types'
 
 // Rutas relativas: el proxy de Vite (vite.config.ts) las reenvia a la API
 // FastAPI en http://localhost:8000 durante el desarrollo.
 const api = axios.create()
 
-// Sin login todavia (app/auth esta vacio): usamos el usuario de pruebas
-// insertado manualmente en la base de datos.
-export const TEST_USER_ID = 1
+// Token JWT en memoria (variable de modulo, nunca localStorage/sessionStorage).
+// AuthContext llama a setAuthToken() en login/register/logout; el interceptor
+// lo adjunta a cada peticion saliente.
+let authToken: string | null = null
+
+export function setAuthToken(token: string | null): void {
+  authToken = token
+}
+
+api.interceptors.request.use((config) => {
+  if (authToken) {
+    config.headers.Authorization = `Bearer ${authToken}`
+  }
+  return config
+})
+
+export async function register(email: string, password: string): Promise<string> {
+  const { data } = await api.post<{ access_token: string }>('/auth/register', { email, password })
+  return data.access_token
+}
+
+export async function login(email: string, password: string): Promise<string> {
+  const { data } = await api.post<{ access_token: string }>('/auth/login', { email, password })
+  return data.access_token
+}
+
+export async function getMe(): Promise<MeResponse> {
+  const { data } = await api.get<MeResponse>('/auth/me')
+  return data
+}
 
 export async function startDraft(formation: FormationName): Promise<number> {
-  const { data } = await api.post<{ draft_session_id: number }>('/game/draft/start', {
-    user_id: TEST_USER_ID,
-    formation,
-  })
+  const { data } = await api.post<{ draft_session_id: number }>('/game/draft/start', { formation })
   return data.draft_session_id
 }
 
@@ -45,8 +76,10 @@ export async function simulateMatch(sessionId: number): Promise<SimulationResult
 }
 
 export function apiErrorMessage(error: unknown): string {
-  if (axios.isAxiosError(error) && typeof error.response?.data?.detail === 'string') {
-    return error.response.data.detail
+  if (axios.isAxiosError(error)) {
+    const detail = error.response?.data?.detail
+    if (typeof detail === 'string') return detail
+    if (Array.isArray(detail) && typeof detail[0]?.msg === 'string') return detail[0].msg
   }
   return 'Ha ocurrido un error inesperado. Intentalo de nuevo.'
 }

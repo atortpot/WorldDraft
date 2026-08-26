@@ -7,6 +7,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     proxy: {
+      '/auth': 'http://localhost:8000',
       '/game': 'http://localhost:8000',
       '/model': 'http://localhost:8000',
       '/players': 'http://localhost:8000',

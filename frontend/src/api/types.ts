@@ -1,3 +1,9 @@
+export interface MeResponse {
+  id: number
+  email: string
+  created_at: string
+}
+
 export type PositionAbbreviation = 'GK' | 'DF' | 'MF' | 'FW'
 
 // Codigo de slot dentro de una formacion. Debe coincidir con los codigos

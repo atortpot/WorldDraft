@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from app.auth.router import router as auth_router
 from app.config import settings
 from app.game.draft_service import DraftError
 from app.game.router import router as game_router
@@ -8,6 +9,7 @@ from app.model.router import router as model_router
 from app.players.router import router as players_router
 
 app = FastAPI(title="WorldDraft")
+app.include_router(auth_router)
 app.include_router(players_router)
 app.include_router(model_router)
 app.include_router(game_router)

@@ -9,6 +9,7 @@ from pathlib import Path
 from statistics import mean
 
 import pandas as pd
+from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -94,10 +95,16 @@ async def start_draft(user_id: int, formation: Formation, db: AsyncSession) -> i
     return draft_session.id
 
 
-async def _get_session_or_raise(draft_session_id: int, db: AsyncSession) -> DraftSession:
+async def _get_session_or_raise(
+    draft_session_id: int, db: AsyncSession, user_id: int | None = None
+) -> DraftSession:
     draft_session = await db.get(DraftSession, draft_session_id)
     if draft_session is None:
         raise DraftError(f"El draft {draft_session_id} no existe")
+    if user_id is not None and draft_session.user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Este draft no pertenece al usuario autenticado"
+        )
     return draft_session
 
 
@@ -150,11 +157,11 @@ async def _draw_country_year(draft_session_id: int, db: AsyncSession) -> tuple[s
     return country, year
 
 
-async def roll_draft(draft_session_id: int, db: AsyncSession) -> dict:
+async def roll_draft(draft_session_id: int, user_id: int, db: AsyncSession) -> dict:
     """Devuelve la tirada activa de la sesion, sorteando una nueva si no
     habia ninguna pendiente. Idempotente mientras no se resuelva con un pick
     o un pass: llamar varias veces devuelve siempre la misma tirada."""
-    draft_session = await _get_session_or_raise(draft_session_id, db)
+    draft_session = await _get_session_or_raise(draft_session_id, db, user_id)
     if draft_session.status != DraftStatus.IN_PROGRESS:
         raise DraftError("Este draft ya ha finalizado")
 
@@ -176,8 +183,8 @@ async def roll_draft(draft_session_id: int, db: AsyncSession) -> dict:
     }
 
 
-async def pass_roll(draft_session_id: int, db: AsyncSession) -> dict:
-    draft_session = await _get_session_or_raise(draft_session_id, db)
+async def pass_roll(draft_session_id: int, user_id: int, db: AsyncSession) -> dict:
+    draft_session = await _get_session_or_raise(draft_session_id, db, user_id)
     if draft_session.status != DraftStatus.IN_PROGRESS:
         raise DraftError("Este draft ya ha finalizado")
     if draft_session.current_roll_country is None:
@@ -200,9 +207,10 @@ async def pick_player(
     draft_session_id: int,
     player_id: int,
     slot_index: int,
+    user_id: int,
     db: AsyncSession,
 ) -> dict:
-    draft_session = await _get_session_or_raise(draft_session_id, db)
+    draft_session = await _get_session_or_raise(draft_session_id, db, user_id)
     if draft_session.status != DraftStatus.IN_PROGRESS:
         raise DraftError("Este draft ya ha finalizado")
     if draft_session.current_roll_country is None:
@@ -250,8 +258,8 @@ async def pick_player(
     return {"pick_id": draft_pick.id, "player_id": draft_pick.player_id, "slot_index": slot_index, "slot_position": slot_position}
 
 
-async def get_draft_team(draft_session_id: int, db: AsyncSession) -> list[dict]:
-    draft_session = await _get_session_or_raise(draft_session_id, db)
+async def get_draft_team(draft_session_id: int, user_id: int, db: AsyncSession) -> list[dict]:
+    draft_session = await _get_session_or_raise(draft_session_id, db, user_id)
     slots = slots_for(draft_session.formation)
     stmt = (
         select(DraftPick, Player)
@@ -344,8 +352,8 @@ def _calculate_chemistry(team: list[dict]) -> dict:
     }
 
 
-async def calculate_team_stats(draft_session_id: int, db: AsyncSession) -> dict:
-    team = await get_draft_team(draft_session_id, db)
+async def calculate_team_stats(draft_session_id: int, user_id: int, db: AsyncSession) -> dict:
+    team = await get_draft_team(draft_session_id, user_id, db)
     if not team:
         raise DraftError("El draft todavia no tiene jugadores elegidos")
 
@@ -468,17 +476,17 @@ async def get_opponent_for_round(round_: DraftRound, db: AsyncSession) -> dict:
     }
 
 
-async def simulate_draft_match(draft_session_id: int, db: AsyncSession) -> dict:
-    draft_session = await _get_session_or_raise(draft_session_id, db)
+async def simulate_draft_match(draft_session_id: int, user_id: int, db: AsyncSession) -> dict:
+    draft_session = await _get_session_or_raise(draft_session_id, db, user_id)
     if draft_session.current_round in (DraftRound.ELIMINATED, DraftRound.CHAMPION):
         raise DraftError("El torneo ya ha terminado para este draft")
 
-    team = await get_draft_team(draft_session_id, db)
+    team = await get_draft_team(draft_session_id, user_id, db)
     if len(team) != TEAM_SIZE:
         raise DraftError(f"El equipo debe tener {TEAM_SIZE} jugadores para simular (tiene {len(team)})")
 
     current_round = draft_session.current_round
-    team_stats = await calculate_team_stats(draft_session_id, db)
+    team_stats = await calculate_team_stats(draft_session_id, user_id, db)
     opponent = await get_opponent_for_round(current_round, db)
 
     team_a_stats = {
