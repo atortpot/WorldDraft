@@ -4,12 +4,26 @@ import { apiErrorMessage, startDraft } from '../api/client'
 import { FormationThumbnail } from '../components/FormationThumbnail'
 import { useDraft } from '../context/DraftContext'
 import { FORMATION_NAMES } from '../lib/formations'
-import type { FormationName } from '../api/types'
+import type { DraftMode, FormationName } from '../api/types'
+
+const MODES: { value: DraftMode; label: string; description: string }[] = [
+  {
+    value: 'classic',
+    label: 'Modo Clasico',
+    description: 'Nombre, posicion, año del torneo y rating a la vista.',
+  },
+  {
+    value: 'almanac',
+    label: 'Modo Almanaque',
+    description: 'El rating se oculta ("???"): confia en tu memoria futbolistica.',
+  },
+]
 
 export function FormationPage() {
   const navigate = useNavigate()
   const { startSession } = useDraft()
   const [selected, setSelected] = useState<FormationName | null>(null)
+  const [mode, setMode] = useState<DraftMode>('classic')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -19,7 +33,7 @@ export function FormationPage() {
     setError(null)
     try {
       const sessionId = await startDraft(selected)
-      startSession(sessionId, selected)
+      startSession(sessionId, selected, mode)
       navigate('/draft')
     } catch (err) {
       setError(apiErrorMessage(err))
@@ -58,6 +72,32 @@ export function FormationPage() {
             </button>
           )
         })}
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <h2 className="text-center text-sm font-medium uppercase tracking-wide text-slate-500">
+          Modo de draft
+        </h2>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {MODES.map((option) => {
+            const isSelected = mode === option.value
+            return (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => setMode(option.value)}
+                className={`flex flex-col gap-1 rounded-xl border p-4 text-left transition ${
+                  isSelected
+                    ? 'border-emerald-500 bg-emerald-500/10'
+                    : 'border-slate-800 bg-slate-900 hover:border-slate-600'
+                }`}
+              >
+                <span className="text-sm font-semibold text-slate-100">{option.label}</span>
+                <span className="text-xs text-slate-400">{option.description}</span>
+              </button>
+            )
+          })}
+        </div>
       </div>
 
       <div className="flex justify-center pt-2">

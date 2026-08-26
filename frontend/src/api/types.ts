@@ -33,6 +33,11 @@ export type FormationName =
   | '4-4-2 Diamante'
   | '3-4-2-1'
 
+// Modo de presentacion del draft, puramente de frontend (no se envia al
+// backend): en "almanac" el rating de los jugadores se oculta mientras se
+// elige, para forzar a decidir de memoria en vez de por el numero.
+export type DraftMode = 'classic' | 'almanac'
+
 export interface RollPlayer {
   id: number
   name: string

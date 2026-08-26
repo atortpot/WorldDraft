@@ -20,7 +20,8 @@ const POSITION_LABELS: Record<string, string> = {
 
 export function DraftPage() {
   const navigate = useNavigate()
-  const { sessionId, formation } = useDraft()
+  const { sessionId, formation, mode } = useDraft()
+  const hideRatings = mode === 'almanac'
 
   const [team, setTeam] = useState<TeamMember[]>([])
   const [roll, setRoll] = useState<RollResult | null>(null)
@@ -160,9 +161,11 @@ export function DraftPage() {
                   >
                     <span className="text-sm font-medium text-slate-100">{player.name}</span>
                     <span className="text-xs text-slate-500">{POSITION_LABELS[player.position]}</span>
-                    <span className="rounded-full bg-slate-800 px-1.5 py-0.5 text-xs font-medium text-emerald-400">
-                      {player.rating.toFixed(1)}
-                    </span>
+                    {!hideRatings && (
+                      <span className="rounded-full bg-slate-800 px-1.5 py-0.5 text-xs font-medium text-emerald-400">
+                        {player.rating.toFixed(1)}
+                      </span>
+                    )}
                   </button>
                 </li>
               )
@@ -196,9 +199,10 @@ export function DraftPage() {
                 selectedPlayer={selectedPlayer}
                 onSlotClick={handleSlotClick}
                 disabled={picking}
+                hideRatings={hideRatings}
               />
             </div>
-            <BoxScore formation={formation} team={team} />
+            <BoxScore formation={formation} team={team} hideRatings={hideRatings} />
           </div>
           <ChemistryPanel team={team} />
         </>

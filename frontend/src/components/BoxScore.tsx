@@ -4,9 +4,10 @@ import { FORMATIONS } from '../lib/formations'
 interface Props {
   formation: FormationName
   team: TeamMember[]
+  hideRatings?: boolean
 }
 
-export function BoxScore({ formation, team }: Props) {
+export function BoxScore({ formation, team, hideRatings }: Props) {
   const slots = FORMATIONS[formation]
   const teamBySlot = new Map(team.map((member) => [member.slot_index, member]))
   const avgRating = team.length > 0 ? team.reduce((sum, m) => sum + m.rating, 0) / team.length : 0
@@ -30,10 +31,12 @@ export function BoxScore({ formation, team }: Props) {
           )
         })}
       </ul>
-      <div className="mt-2 flex items-center justify-between rounded-lg bg-slate-800 px-3 py-2">
-        <span className="text-sm font-medium text-slate-300">Rating medio</span>
-        <span className="text-lg font-bold text-emerald-400">{avgRating.toFixed(1)}</span>
-      </div>
+      {!hideRatings && (
+        <div className="mt-2 flex items-center justify-between rounded-lg bg-slate-800 px-3 py-2">
+          <span className="text-sm font-medium text-slate-300">Rating medio</span>
+          <span className="text-lg font-bold text-emerald-400">{avgRating.toFixed(1)}</span>
+        </div>
+      )}
     </div>
   )
 }

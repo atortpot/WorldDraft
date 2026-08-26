@@ -93,7 +93,12 @@ export function TournamentPage() {
                   className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900 px-4 py-2"
                 >
                   <p className="font-medium text-slate-100">{member.name}</p>
-                  <span className="text-xs text-slate-500">{member.tournament_year}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-500">{member.tournament_year}</span>
+                    <span className="rounded-full bg-slate-800 px-2 py-0.5 text-xs font-medium text-emerald-400">
+                      {member.rating.toFixed(1)}
+                    </span>
+                  </div>
                 </li>
               ))}
             </ul>

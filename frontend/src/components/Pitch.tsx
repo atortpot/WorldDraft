@@ -8,9 +8,10 @@ interface Props {
   selectedPlayer: RollPlayer | null
   onSlotClick: (slotIndex: number) => void
   disabled: boolean
+  hideRatings?: boolean
 }
 
-export function Pitch({ formation, team, selectedPlayer, onSlotClick, disabled }: Props) {
+export function Pitch({ formation, team, selectedPlayer, onSlotClick, disabled, hideRatings }: Props) {
   const layout = computeLayout(formation)
   const teamBySlot = new Map(team.map((member) => [member.slot_index, member]))
 
@@ -37,7 +38,7 @@ export function Pitch({ formation, team, selectedPlayer, onSlotClick, disabled }
             {member ? (
               <>
                 <div className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-500 text-xs font-bold text-slate-950 shadow">
-                  {member.rating.toFixed(1)}
+                  {!hideRatings && member.rating.toFixed(1)}
                 </div>
                 <span className="max-w-[4.5rem] truncate rounded bg-slate-950/70 px-1 text-[10px] leading-tight text-slate-100">
                   {member.name}
