@@ -3,8 +3,10 @@ de un partido ya resuelto por app/model/simulator.py.
 
 Es puramente de presentacion: no decide quien gana, solo dramatiza con
 cierto criterio futbolistico un resultado y unas probabilidades que ya
-existen. No usa el modelo ni ningun dato adicional del rival (no tenemos
-jugadores reales del lado visitante, solo etiquetas genericas).
+existen. No usa el modelo. Los goles del rival se atribuyen a jugadores
+reales de esa seleccion/año cuando la tabla players los tiene (ver
+"away_team" en generate_match_events); si no hay datos, cae a un nombre
+generico ("Jugador rival").
 """
 
 import random
@@ -30,16 +32,10 @@ _RED_CARD_CHANCE = 0.12  # incluso cumpliendo el resto de condiciones, es rara
 _RED_CARD_PROB_MARGIN = 0.15
 MAX_YELLOW_CARDS = 4
 
-_GENERIC_RIVAL_SCORERS = [
-    "Jugador rival",
-    "Delantero rival",
-    "Centrocampista rival",
-    "Defensa rival",
-]
+_FALLBACK_RIVAL_SCORER = "Jugador rival"
 _GENERIC_RIVAL_YELLOW = ["Defensa rival", "Centrocampista rival"]
 _GENERIC_RIVAL_YELLOW_RARE = ["Portero rival", "Delantero rival"]
 _GENERIC_RIVAL_RED_CENTRAL = ["Defensa central rival", "Centrocampista rival"]
-_GENERIC_RIVAL_PENALTY_TAKERS = ["Delantero rival", "Centrocampista rival"]
 
 
 def _pick_score(result: str, win: float, draw: float, loss: float) -> tuple[int, int]:
@@ -106,15 +102,14 @@ def _scorer_weight(player: dict) -> float:
     return rating * multiplier
 
 
-def _pick_home_scorer(team: list[dict]) -> str:
+def _pick_scorer(team: list[dict], fallback: str) -> str:
+    """Elige goleador ponderado por posicion/rating (ver _scorer_weight); si
+    no hay plantilla real disponible (equipo propio vacio, o rival de una
+    seleccion/año sin jugadores en la tabla players) usa `fallback`."""
     if not team:
-        return "Jugador"
+        return fallback
     weights = [_scorer_weight(player) for player in team]
     return random.choices(team, weights=weights, k=1)[0]["name"]
-
-
-def _pick_away_scorer() -> str:
-    return random.choice(_GENERIC_RIVAL_SCORERS)
 
 
 def _pick_penalty_taker(team: list[dict]) -> dict | None:
@@ -231,18 +226,23 @@ def _closing_text(
 
 
 def generate_match_events(match_data: dict) -> dict:
-    """match_data: {result, win, draw, loss, explanation, chemistry, team}.
+    """match_data: {result, win, draw, loss, explanation, chemistry, team,
+    away_team}.
 
     "team" es la lista de jugadores del draft (con "name", "position",
-    "rating" y "slot_position") tal como la devuelve get_draft_team(); el
-    rival no tiene jugadores reales, se usan nombres genericos acordes a
-    su posicion.
+    "rating" y "slot_position") tal como la devuelve get_draft_team().
+    "away_team" es la plantilla real del rival para esa seleccion/año (solo
+    "name", "position" y "rating": no viene de un draft, no tiene
+    slot_position ni formacion); puede venir vacia si esa combinacion no
+    esta en la tabla players, en cuyo caso se cae al nombre generico
+    "Jugador rival".
     """
     result = match_data["result"]
     win = match_data.get("win", 0.0)
     draw = match_data.get("draw", 0.0)
     loss = match_data.get("loss", 0.0)
     team = match_data.get("team", [])
+    away_team = match_data.get("away_team", [])
     chemistry = match_data.get("chemistry")
 
     score_home, score_away = _pick_score(result, win, draw, loss)
@@ -273,7 +273,8 @@ def generate_match_events(match_data: dict) -> dict:
     # --- goles: como mucho un penalti por equipo, marcado siempre por el
     # mismo lanzador designado ---
     home_penalty_taker = _pick_penalty_taker(team)
-    away_penalty_taker_name = random.choice(_GENERIC_RIVAL_PENALTY_TAKERS)
+    away_penalty_taker = _pick_penalty_taker(away_team)
+    away_penalty_taker_name = away_penalty_taker["name"] if away_penalty_taker else _FALLBACK_RIVAL_SCORER
 
     for team_side, score, goal_range, penalty_taker_name in (
         ("home", score_home, home_goal_range, home_penalty_taker["name"] if home_penalty_taker else None),
@@ -296,7 +297,11 @@ def generate_match_events(match_data: dict) -> dict:
                     {"minute": minute, "type": "penalty", "team": team_side, "player_name": penalty_taker_name}
                 )
             else:
-                scorer = _pick_home_scorer(team) if team_side == "home" else _pick_away_scorer()
+                scorer = (
+                    _pick_scorer(team, "Jugador")
+                    if team_side == "home"
+                    else _pick_scorer(away_team, _FALLBACK_RIVAL_SCORER)
+                )
                 events.append({"minute": minute, "type": "goal", "team": team_side, "player_name": scorer})
 
     # --- amarillas: frecuencia segun lo reñido del partido ---

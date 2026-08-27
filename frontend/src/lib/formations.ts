@@ -2,7 +2,7 @@ import type { FormationName, PositionAbbreviation, SlotPosition } from '../api/t
 
 // Debe coincidir con FORMATIONS en app/game/formations.py.
 export const FORMATIONS: Record<FormationName, SlotPosition[]> = {
-  '4-3-3': ['GK', 'LB', 'CB', 'CB', 'RB', 'CDM', 'CM', 'CAM', 'LW', 'ST', 'RW'],
+  '4-3-3': ['GK', 'LB', 'CB', 'CB', 'RB', 'CM', 'CM', 'CM', 'LW', 'ST', 'RW'],
   '4-4-2': ['GK', 'LB', 'CB', 'CB', 'RB', 'LM', 'CM', 'CM', 'RM', 'ST', 'ST'],
   '4-3-2-1': ['GK', 'LB', 'CB', 'CB', 'RB', 'CDM', 'CM', 'CM', 'CAM', 'CAM', 'ST'],
   '3-5-2': ['GK', 'CB', 'CB', 'CB', 'LM', 'CDM', 'CM', 'CDM', 'RM', 'ST', 'ST'],
@@ -47,25 +47,6 @@ export interface SlotLayout {
   y: number
 }
 
-interface RowDef {
-  y: number
-  width: number
-  positions: SlotPosition[]
-}
-
-// De porteria (abajo, y alto) a delantera (arriba, y bajo). El ancho de
-// cada fila es la separacion horizontal maxima entre sus slots, no una
-// coordenada por posicion: asi el layout se calcula segun que slots trae
-// cada formacion, en vez de tener coordenadas fijas por formacion.
-const ROWS: RowDef[] = [
-  { y: 92, width: 0, positions: ['GK'] },
-  { y: 75, width: 76, positions: ['LB', 'CB', 'RB', 'LWB', 'RWB'] },
-  { y: 58, width: 50, positions: ['CDM'] },
-  { y: 44, width: 62, positions: ['CM'] },
-  { y: 30, width: 70, positions: ['LM', 'RM', 'CAM'] },
-  { y: 12, width: 60, positions: ['LW', 'ST', 'RW'] },
-]
-
 // Dentro de una fila, ordena los slots de izquierda a derecha.
 const LANE_RANK: Record<SlotPosition, number> = {
   LB: 0,
@@ -84,25 +65,59 @@ const LANE_RANK: Record<SlotPosition, number> = {
   RW: 2,
 }
 
+const GK_Y = 92
+const BACK_LINE_Y = 75
+const FRONT_LINE_Y = 12
+
+// Cuantos slots (sin contar el portero) forman cada linea horizontal, de
+// defensa a delantera. Por defecto se lee directamente del nombre de la
+// formacion ("4-3-2-1" -> [4, 3, 2, 1]), que ya coincide con el orden de los
+// slots en FORMATIONS; solo hace falta una entrada aqui cuando el nombre no
+// refleja la distribucion visual real, como el rombo de "4-4-2 Diamante"
+// (4 defensas, pivote, doble mixto, mediapunta, 2 delanteros: 5 lineas, no
+// las 3 que sugiere el nombre).
+const ROW_SPLIT_OVERRIDES: Partial<Record<FormationName, number[]>> = {
+  '4-4-2 Diamante': [4, 1, 2, 1, 2],
+}
+
+function rowSplitFor(formation: FormationName): number[] {
+  return ROW_SPLIT_OVERRIDES[formation] ?? formation.split(' ')[0].split('-').map(Number)
+}
+
+// Separacion horizontal maxima entre los slots de una fila, segun cuantos
+// haya: mas jugadores en la linea, mas se abren hacia las bandas.
+function rowWidth(n: number): number {
+  if (n <= 1) return 0
+  return Math.min(84, 40 + (n - 1) * 16)
+}
+
 export function computeLayout(formation: FormationName): SlotLayout[] {
-  const slots = FORMATIONS[formation]
-  const result: SlotLayout[] = []
+  const [gk, ...outfield] = FORMATIONS[formation]
+  const split = rowSplitFor(formation)
+  const rowCount = split.length
 
-  for (const row of ROWS) {
-    const items = slots
-      .map((position, index) => ({ position, index }))
-      .filter(({ position }) => row.positions.includes(position))
+  const result: SlotLayout[] = [{ index: 0, position: gk, x: 50, y: GK_Y }]
+
+  let cursor = 0
+  split.forEach((count, rowIndex) => {
+    const items = outfield
+      .slice(cursor, cursor + count)
+      .map((position, i) => ({ position, index: cursor + 1 + i }))
       .sort((a, b) => LANE_RANK[a.position] - LANE_RANK[b.position])
+    cursor += count
 
-    const n = items.length
-    if (n === 0) continue
+    const y =
+      rowCount === 1
+        ? BACK_LINE_Y
+        : BACK_LINE_Y - (rowIndex / (rowCount - 1)) * (BACK_LINE_Y - FRONT_LINE_Y)
+    const width = rowWidth(items.length)
+    const lo = 50 - width / 2
 
-    const lo = 50 - row.width / 2
     items.forEach((item, i) => {
-      const x = n === 1 ? 50 : lo + (i / (n - 1)) * row.width
-      result.push({ index: item.index, position: item.position, x, y: row.y })
+      const x = items.length === 1 ? 50 : lo + (i / (items.length - 1)) * width
+      result.push({ index: item.index, position: item.position, x, y })
     })
-  }
+  })
 
   return result.sort((a, b) => a.index - b.index)
 }

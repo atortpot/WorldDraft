@@ -1,7 +1,88 @@
 @import "tailwindcss";
 
+:root {
+  --color-pitch: #10b981;
+  --color-pitch-dark: #065f46;
+  --color-gold: #fbbf24;
+  --color-gold-dark: #b45309;
+  --color-pos-fw: #34d399;
+  --color-pos-mf: #38bdf8;
+  --color-pos-df: #facc15;
+  --color-pos-gk: #fb923c;
+}
+
 body {
-  @apply bg-slate-950 text-slate-100;
+  @apply text-slate-100;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(16, 185, 129, 0.12), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 100%, rgba(56, 189, 248, 0.06), transparent),
+    #030712;
+  min-height: 100vh;
+}
+
+/* Tarjeta con efecto de cristal esmerilado, usado donde tiene sentido
+   destacar una superficie sobre el fondo con gradiente. */
+.glass-card {
+  background: linear-gradient(155deg, rgba(30, 41, 59, 0.65), rgba(15, 23, 42, 0.55));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+@keyframes page-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-page-in {
+  animation: page-fade-in 0.35s ease-out both;
+}
+
+@keyframes page-fade-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+.animate-page-out {
+  animation: page-fade-out 0.2s ease-in both;
+}
+
+@keyframes roll-slide-out {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-18px);
+  }
+}
+.animate-roll-out {
+  animation: roll-slide-out 0.18s ease-in both;
+}
+
+@keyframes roll-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.animate-roll-in {
+  animation: roll-slide-in 0.25s ease-out both;
 }
 
 @keyframes event-toast-in {
@@ -13,4 +94,81 @@ body {
     opacity: 1;
     transform: translateY(0) scale(1);
   }
+}
+
+@keyframes card-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.75);
+  }
+  60% {
+    transform: scale(1.06);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.animate-card-pop {
+  animation: card-pop-in 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes goal-impact {
+  0% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  35% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+  60% {
+    transform: scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.animate-goal-impact {
+  animation: goal-impact 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes slot-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.55);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgba(16, 185, 129, 0);
+    transform: scale(1.08);
+  }
+}
+.animate-slot-pulse {
+  animation: slot-pulse 1.3s ease-in-out infinite;
+}
+
+@keyframes confetti-fall {
+  0% {
+    opacity: 1;
+    transform: translateY(-10vh) rotate(0deg);
+  }
+  100% {
+    opacity: 0.9;
+    transform: translateY(110vh) rotate(540deg);
+  }
+}
+
+@keyframes dramatic-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+.animate-dramatic-pulse {
+  animation: dramatic-pulse 3.5s ease-in-out infinite;
 }

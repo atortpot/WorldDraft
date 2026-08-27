@@ -56,8 +56,16 @@ _CONCATENATED_NAME_RE = re.compile(r"^([A-ZÀ-Ý]{2,})([A-ZÀ-Ý][a-zà-ÿ].*)$"
 
 
 def normalize_name(name: str) -> str:
+    """Sin acentos, en mayusculas, espacios colapsados y SIN guiones (no se
+    reemplazan por espacio, se eliminan): los nombres coreanos romanizados
+    vienen con guion en una fuente y pegados en otra (p.ej. squads.csv trae
+    "Lee Tae-seok", player_stats.csv trae "Taeseok Lee"); quitar el guion
+    fusiona "Tae-seok" en "Taeseok" y deja ambas fuentes con el mismo
+    conjunto de tokens, recuperable por fuzzy matching (token_set_ratio) aun
+    con el orden de nombre/apellido invertido entre fuentes."""
     without_accents = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
-    return " ".join(without_accents.upper().split())
+    without_hyphens = without_accents.replace("-", "")
+    return " ".join(without_hyphens.upper().split())
 
 
 def split_concatenated_name(raw_name: str) -> str | None:

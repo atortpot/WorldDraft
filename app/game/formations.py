@@ -10,7 +10,7 @@ distintas de la lista con distinto indice).
 from app.db.models import Formation, PlayerPosition
 
 FORMATIONS: dict[Formation, list[str]] = {
-    Formation.F_4_3_3: ["GK", "LB", "CB", "CB", "RB", "CDM", "CM", "CAM", "LW", "ST", "RW"],
+    Formation.F_4_3_3: ["GK", "LB", "CB", "CB", "RB", "CM", "CM", "CM", "LW", "ST", "RW"],
     Formation.F_4_4_2: ["GK", "LB", "CB", "CB", "RB", "LM", "CM", "CM", "RM", "ST", "ST"],
     Formation.F_4_3_2_1: ["GK", "LB", "CB", "CB", "RB", "CDM", "CM", "CM", "CAM", "CAM", "ST"],
     Formation.F_3_5_2: ["GK", "CB", "CB", "CB", "LM", "CDM", "CM", "CDM", "RM", "ST", "ST"],

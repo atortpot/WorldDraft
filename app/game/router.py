@@ -101,6 +101,16 @@ async def pick_endpoint(
     )
 
 
+@router.post("/{session_id}/abandon")
+async def abandon_draft_endpoint(
+    session_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await draft_service.abandon_draft(session_id, current_user.id, db)
+    return {"status": "abandoned"}
+
+
 @router.get("/{session_id}/team")
 async def get_team_endpoint(
     session_id: int,

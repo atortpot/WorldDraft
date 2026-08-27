@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { apiErrorMessage } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import { ShieldIcon } from '../lib/icons'
 import { collectRegisterErrors } from '../lib/validation'
 
 type Mode = 'login' | 'register'
@@ -63,19 +64,24 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-6 px-4">
-      <h1 className="text-3xl font-bold text-slate-50">WorldDraft</h1>
+    <div className="animate-page-in flex min-h-screen flex-col items-center justify-center gap-8 px-4">
+      <div className="flex flex-col items-center gap-2">
+        <ShieldIcon className="h-10 w-10 text-emerald-400 drop-shadow-[0_0_14px_rgba(16,185,129,0.5)]" />
+        <h1 className="text-3xl font-extrabold tracking-tight text-slate-50">WorldDraft</h1>
+      </div>
 
-      <div className="flex w-full max-w-sm flex-col gap-4 rounded-xl border border-slate-800 bg-slate-900 p-6">
-        <div className="flex gap-2 rounded-lg bg-slate-950 p-1">
+      <div className="glass-card flex w-full max-w-sm flex-col gap-5 rounded-2xl p-7 shadow-2xl">
+        <div className="flex gap-1.5 rounded-xl bg-slate-950/70 p-1.5">
           <button
             type="button"
             onClick={() => {
               setMode('login')
               setErrors([])
             }}
-            className={`flex-1 rounded-md py-1.5 text-sm font-semibold transition ${
-              mode === 'login' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+            className={`flex-1 rounded-lg py-2 text-sm font-bold transition-all duration-200 ${
+              mode === 'login'
+                ? 'bg-gradient-to-b from-emerald-400 to-emerald-600 text-emerald-950 shadow'
+                : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             Iniciar sesion
@@ -86,35 +92,37 @@ export function LoginPage() {
               setMode('register')
               setErrors([])
             }}
-            className={`flex-1 rounded-md py-1.5 text-sm font-semibold transition ${
-              mode === 'register' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-slate-200'
+            className={`flex-1 rounded-lg py-2 text-sm font-bold transition-all duration-200 ${
+              mode === 'register'
+                ? 'bg-gradient-to-b from-emerald-400 to-emerald-600 text-emerald-950 shadow'
+                : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             Crear cuenta
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-          <label className="flex flex-col gap-1 text-sm text-slate-300">
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <label className="flex flex-col gap-1.5 text-sm font-medium text-slate-300">
             Email
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               autoComplete="email"
-              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-emerald-500"
+              className="rounded-xl border border-slate-700 bg-slate-950/70 px-3.5 py-2.5 text-slate-100 outline-none transition-colors focus:border-emerald-400"
               placeholder="tu@email.com"
             />
           </label>
 
-          <label className="flex flex-col gap-1 text-sm text-slate-300">
+          <label className="flex flex-col gap-1.5 text-sm font-medium text-slate-300">
             Contraseña
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-emerald-500"
+              className="rounded-xl border border-slate-700 bg-slate-950/70 px-3.5 py-2.5 text-slate-100 outline-none transition-colors focus:border-emerald-400"
               placeholder={mode === 'register' ? 'Minimo 8 caracteres, Aa1!' : 'Tu contraseña'}
             />
           </label>
@@ -122,7 +130,7 @@ export function LoginPage() {
           {errors.length > 0 && (
             <ul className="flex flex-col gap-1">
               {errors.map((message) => (
-                <li key={message} className="text-sm text-red-400">
+                <li key={message} className="text-sm font-medium text-red-400">
                   {message}
                 </li>
               ))}
@@ -132,7 +140,7 @@ export function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="mt-2 rounded-lg bg-emerald-500 px-4 py-2 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+            className="mt-1 rounded-xl bg-gradient-to-b from-emerald-400 to-emerald-600 px-4 py-3 font-bold text-emerald-950 shadow-lg shadow-emerald-950/40 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
           >
             {loading
               ? 'Un momento...'

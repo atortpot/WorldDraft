@@ -31,6 +31,7 @@ from app.db.database import AsyncSessionLocal  # noqa: E402
 from app.db.models import Player, PlayerPosition  # noqa: E402
 from app.model.fifa_data import to_fifa_ranking_country  # noqa: E402
 from app.players.name_matching import NameMatcher, normalize_name, split_concatenated_name  # noqa: E402
+from manual_overrides_2026 import MANUAL_NAME_OVERRIDES_2026  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("update_ratings")
@@ -60,11 +61,20 @@ PLAYER_STATS_POSITION_MAP = {"GK": "GK", "DEF": "DF", "MID": "MF", "FWD": "FW"}
 # jugadores inequivocos los team_id sin ningun voto (p.ej. Brasil, cuyos
 # nombres estan todos concatenados y por eso nunca cruzan por nombre
 # exacto). Ver la investigacion de feature/improve-matching para el detalle.
+#
+# Los valores deben ser el nombre CANONICO de to_fifa_ranking_country, no el
+# nombre "natural" del pais: el lado de la consulta (update_2026) pasa
+# player.country por to_fifa_ranking_country antes de cruzar, asi que
+# cualquier valor de aqui que no coincida exactamente con esa salida nunca
+# cruza, sea cual sea la calidad del nombre del jugador. 8 entradas estaban
+# mal (South Korea/Czech Republic/United States/Curaçao/Ivory Coast/Iran/
+# Cape Verde/DR Congo) y dejaban a esos 8 equipos enteros sin poder cruzar
+# nunca: ver la investigacion de rating=0 en 2026.
 PLAYER_STATS_TEAM_ID_TO_COUNTRY = {
     "1": "Mexico",
     "2": "South Africa",
-    "3": "South Korea",
-    "4": "Czech Republic",
+    "3": "Korea Republic",
+    "4": "Czechia",
     "5": "Canada",
     "6": "Bosnia and Herzegovina",
     "7": "Qatar",
@@ -73,13 +83,13 @@ PLAYER_STATS_TEAM_ID_TO_COUNTRY = {
     "10": "Morocco",
     "11": "Haiti",
     "12": "Scotland",
-    "13": "United States",
+    "13": "USA",
     "14": "Paraguay",
     "15": "Australia",
     "16": "Turkey",
     "17": "Germany",
-    "18": "Curaçao",
-    "19": "Ivory Coast",
+    "18": "Curacao",
+    "19": "Côte d'Ivoire",
     "20": "Ecuador",
     "21": "Netherlands",
     "22": "Japan",
@@ -87,10 +97,10 @@ PLAYER_STATS_TEAM_ID_TO_COUNTRY = {
     "24": "Tunisia",
     "25": "Belgium",
     "26": "Egypt",
-    "27": "Iran",
+    "27": "IR Iran",
     "28": "New Zealand",
     "29": "Spain",
-    "30": "Cape Verde",
+    "30": "Cabo Verde",
     "31": "Saudi Arabia",
     "32": "Uruguay",
     "33": "France",
@@ -102,7 +112,7 @@ PLAYER_STATS_TEAM_ID_TO_COUNTRY = {
     "39": "Austria",
     "40": "Jordan",
     "41": "Portugal",
-    "42": "DR Congo",
+    "42": "Congo DR",
     "43": "Uzbekistan",
     "44": "Colombia",
     "45": "England",
@@ -235,7 +245,11 @@ def _load_player_stats_2026() -> tuple[dict[tuple[str, int, str], dict], dict[tu
     squads.csv/Wikipedia) usa el nombre publico corto ("Aaron Hickey") --
     lo resuelve el fuzzy matching de NameMatcher. Un puñado de nombres
     vienen con el apellido pegado en mayusculas (p.ej. "MARQUINHOSMarcos"):
-    split_concatenated_name los reconstruye antes de indexarlos.
+    split_concatenated_name los reconstruye antes de indexarlos. Un puñado
+    mas viene con el nombre corrupto o demasiado distinto del publico para
+    que el fuzzy lo recupere (ver MANUAL_NAME_OVERRIDES_2026 en
+    manual_overrides_2026.py, p.ej. "Alexandre Nuno" -> "Nuno Mendes"): esos
+    se corrigen antes de nada, antes incluso de split_concatenated_name.
     """
     stats_by_key: dict[tuple[str, int, str], dict] = {}
     positions: dict[tuple[str, int, str], str] = {}
@@ -247,7 +261,8 @@ def _load_player_stats_2026() -> tuple[dict[tuple[str, int, str], dict], dict[tu
                 continue
 
             raw_name = row["player_name"].strip()
-            fixed_name = split_concatenated_name(raw_name) or raw_name
+            overridden_name = MANUAL_NAME_OVERRIDES_2026.get(raw_name)
+            fixed_name = overridden_name or split_concatenated_name(raw_name) or raw_name
             key = (normalize_name(fixed_name), 2026, country)
 
             stats_by_key[key] = {

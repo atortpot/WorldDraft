@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiErrorMessage, startDraft } from '../api/client'
+import { AppHeader } from '../components/AppHeader'
 import { FormationThumbnail } from '../components/FormationThumbnail'
 import { useDraft } from '../context/DraftContext'
 import { FORMATION_NAMES } from '../lib/formations'
@@ -43,15 +44,18 @@ export function FormationPage() {
   }
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-4xl flex-col gap-6 px-4 py-10">
+    <div className="animate-page-in mx-auto flex min-h-screen max-w-4xl flex-col gap-8 px-4 py-6">
+      <AppHeader />
       <header className="flex flex-col items-center gap-2 text-center">
-        <h1 className="text-2xl font-bold text-slate-50">Elige tu formacion</h1>
-        <p className="text-slate-400">Determina que slots tendra que cubrir tu equipo.</p>
+        <h1 className="text-3xl font-extrabold tracking-tight text-slate-50 sm:text-4xl">
+          Elige tu formacion
+        </h1>
+        <p className="text-base text-slate-400">Determina que slots tendra que cubrir tu equipo.</p>
       </header>
 
-      {error && <p className="text-center text-sm text-red-400">{error}</p>}
+      {error && <p className="text-center text-sm font-medium text-red-400">{error}</p>}
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
         {FORMATION_NAMES.map((formation) => {
           const isSelected = selected === formation
           return (
@@ -59,23 +63,27 @@ export function FormationPage() {
               key={formation}
               type="button"
               onClick={() => setSelected(formation)}
-              className={`flex flex-col items-center gap-2 rounded-xl border p-3 transition ${
+              className={`glass-card group flex flex-col items-center gap-3 rounded-2xl p-4 transition-all duration-200 ease-out hover:-translate-y-1 hover:shadow-xl hover:shadow-emerald-950/40 ${
                 isSelected
-                  ? 'border-emerald-500 bg-emerald-500/10'
-                  : 'border-slate-800 bg-slate-900 hover:border-slate-600'
+                  ? 'border-emerald-400/70 shadow-lg shadow-emerald-950/50 ring-1 ring-emerald-400/40'
+                  : 'hover:border-slate-600'
               }`}
             >
-              <div className="h-28 w-20">
+              <div className="h-32 w-24 overflow-hidden rounded-lg shadow-inner transition-transform duration-200 group-hover:scale-[1.03]">
                 <FormationThumbnail formation={formation} />
               </div>
-              <span className="text-sm font-semibold text-slate-100">{formation}</span>
+              <span
+                className={`text-sm font-bold tracking-tight ${isSelected ? 'text-emerald-300' : 'text-slate-100'}`}
+              >
+                {formation}
+              </span>
             </button>
           )
         })}
       </div>
 
-      <div className="flex flex-col gap-2">
-        <h2 className="text-center text-sm font-medium uppercase tracking-wide text-slate-500">
+      <div className="flex flex-col gap-3">
+        <h2 className="text-center text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
           Modo de draft
         </h2>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -86,14 +94,16 @@ export function FormationPage() {
                 key={option.value}
                 type="button"
                 onClick={() => setMode(option.value)}
-                className={`flex flex-col gap-1 rounded-xl border p-4 text-left transition ${
+                className={`glass-card flex flex-col gap-1.5 rounded-2xl p-4 text-left transition-all duration-200 hover:-translate-y-0.5 ${
                   isSelected
-                    ? 'border-emerald-500 bg-emerald-500/10'
-                    : 'border-slate-800 bg-slate-900 hover:border-slate-600'
+                    ? 'border-emerald-400/70 shadow-lg shadow-emerald-950/40 ring-1 ring-emerald-400/40'
+                    : 'hover:border-slate-600'
                 }`}
               >
-                <span className="text-sm font-semibold text-slate-100">{option.label}</span>
-                <span className="text-xs text-slate-400">{option.description}</span>
+                <span className={`text-sm font-bold ${isSelected ? 'text-emerald-300' : 'text-slate-100'}`}>
+                  {option.label}
+                </span>
+                <span className="text-xs leading-relaxed text-slate-400">{option.description}</span>
               </button>
             )
           })}
@@ -105,7 +115,7 @@ export function FormationPage() {
           type="button"
           onClick={handleStart}
           disabled={!selected || loading}
-          className="rounded-lg bg-emerald-500 px-6 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-xl bg-gradient-to-b from-emerald-400 to-emerald-600 px-8 py-3.5 text-base font-bold text-emerald-950 shadow-lg shadow-emerald-950/40 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-emerald-900/50 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0 disabled:hover:shadow-lg"
         >
           {loading ? 'Creando draft...' : 'Empezar draft'}
         </button>

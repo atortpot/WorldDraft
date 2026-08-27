@@ -62,6 +62,10 @@ export async function pickPlayer(sessionId: number, playerId: number, slotIndex:
   })
 }
 
+export async function abandonDraft(sessionId: number): Promise<void> {
+  await api.post(`/game/draft/${sessionId}/abandon`)
+}
+
 export async function getTeam(sessionId: number): Promise<TeamMember[]> {
   const { data } = await api.get<TeamMember[]>(`/game/draft/${sessionId}/team`)
   return data

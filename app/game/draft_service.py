@@ -259,6 +259,16 @@ async def pick_player(
     return {"pick_id": draft_pick.id, "player_id": draft_pick.player_id, "slot_index": slot_index, "slot_position": slot_position}
 
 
+async def abandon_draft(draft_session_id: int, user_id: int, db: AsyncSession) -> None:
+    """Marca la sesion como terminada sin completarla: deja de aparecer como
+    sesion activa en /game/draft/active (que filtra por current_round) y no
+    se puede seguir jugando en ella."""
+    draft_session = await _get_session_or_raise(draft_session_id, db, user_id)
+    draft_session.status = DraftStatus.FINISHED
+    draft_session.current_round = DraftRound.ELIMINATED
+    await db.commit()
+
+
 async def get_draft_team(draft_session_id: int, user_id: int, db: AsyncSession) -> list[dict]:
     draft_session = await _get_session_or_raise(draft_session_id, db, user_id)
     slots = slots_for(draft_session.formation)
@@ -487,18 +497,16 @@ async def get_opponent_for_round(round_: DraftRound, db: AsyncSession) -> dict:
     fifa_points = fifa_points_at(team, tournament_start_date(year)) or 0.0
 
     wiki_country = to_squads_country_name(team)
-    ratings = (
+    roster = (
         (
             await db.execute(
-                select(Player.rating).where(
-                    Player.country == wiki_country, Player.tournament_year == year
-                )
+                select(Player).where(Player.country == wiki_country, Player.tournament_year == year)
             )
         )
         .scalars()
         .all()
     )
-    rating_avg = float(mean(ratings)) if ratings else 0.0
+    rating_avg = float(mean(p.rating for p in roster)) if roster else 0.0
 
     return {
         "country": wiki_country,
@@ -506,6 +514,13 @@ async def get_opponent_for_round(round_: DraftRound, db: AsyncSession) -> dict:
         "fifa_points": fifa_points,
         "player_rating_avg": rating_avg,
         "goals_avg": goals_avg,
+        # Jugadores reales del rival para esta ronda (puede estar vacio si
+        # esa seleccion/año no esta en la tabla players): ver
+        # narrative.generate_match_events, que los usa para elegir goleador
+        # en vez del generico "Jugador rival" cuando hay datos.
+        "players": [
+            {"name": p.name, "position": p.position.value, "rating": p.rating} for p in roster
+        ],
     }
 
 
@@ -580,6 +595,7 @@ async def simulate_draft_match(draft_session_id: int, user_id: int, db: AsyncSes
             "explanation": explanation,
             "chemistry": team_stats["chemistry"],
             "team": team,
+            "away_team": opponent["players"],
         }
     )
 
