@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import DraftPick, DraftRound, DraftSession, DraftStatus, Formation, Player
 from app.game.formations import is_slot_compatible, slots_for
+from app.game.narrative import generate_match_events
 from app.model.fifa_data import (
     clean_worldcup_matches_team_name,
     fifa_points_at,
@@ -570,6 +571,18 @@ async def simulate_draft_match(draft_session_id: int, user_id: int, db: AsyncSes
 
     tournament_finished = draft_session.current_round in (DraftRound.ELIMINATED, DraftRound.CHAMPION)
 
+    narrative = generate_match_events(
+        {
+            "result": outcome["result"],
+            "win": outcome["win"],
+            "draw": outcome["draw"],
+            "loss": outcome["loss"],
+            "explanation": explanation,
+            "chemistry": team_stats["chemistry"],
+            "team": team,
+        }
+    )
+
     return {
         "opponent": {"country": opponent["country"], "tournament_year": opponent["tournament_year"]},
         "team_stats": team_a_stats,
@@ -585,4 +598,5 @@ async def simulate_draft_match(draft_session_id: int, user_id: int, db: AsyncSes
         "tournament_finished": tournament_finished,
         "explanation": explanation,
         "chemistry": team_stats["chemistry"],
+        "narrative": narrative,
     }

@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiErrorMessage, getTeam, simulateMatch } from '../api/client'
-import { MatchResultPanel } from '../components/MatchResultPanel'
+import { MatchAnimationScreen } from '../components/MatchAnimationScreen'
 import { TournamentProgress } from '../components/TournamentProgress'
 import { useDraft } from '../context/DraftContext'
-import type { TeamMember } from '../api/types'
+import type { SimulationResult, TeamMember } from '../api/types'
 
 const ROUND_LABELS: Record<string, string> = {
   group_1: 'Partido de grupos 1',
@@ -18,13 +18,18 @@ const ROUND_LABELS: Record<string, string> = {
 
 export function TournamentPage() {
   const navigate = useNavigate()
-  const { sessionId, currentRound, lastResult, matchHistory, recordMatchResult } = useDraft()
+  const { sessionId, currentRound, matchHistory, recordMatchResult } = useDraft()
 
   const [team, setTeam] = useState<TeamMember[]>([])
   const [loadingTeam, setLoadingTeam] = useState(true)
   const [simulating, setSimulating] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [resultVisible, setResultVisible] = useState(false)
+  // El resultado se guarda aqui (no en el contexto) hasta que el usuario lo
+  // reconoce: si actualizasemos currentRound/matchHistory nada mas llegar
+  // la respuesta, TournamentProgress ya mostraria el icono de victoria/
+  // derrota de esta ronda mientras la animacion todavia esta en marcha,
+  // arruinando la sorpresa que es el objetivo de la animacion.
+  const [pendingResult, setPendingResult] = useState<SimulationResult | null>(null)
 
   useEffect(() => {
     if (!sessionId) {
@@ -39,27 +44,31 @@ export function TournamentPage() {
 
   // El equipo ya jugo el ultimo partido de su historial (final o
   // eliminatoria perdida): navega a la pantalla final correspondiente, pero
-  // solo despues de que el jugador haya cerrado el panel de resultado con
-  // "Ver resultado final" (resultVisible=false).
+  // solo despues de que el jugador haya reconocido el resultado (lo que
+  // actualiza currentRound).
   useEffect(() => {
-    if (resultVisible) return
+    if (pendingResult) return
     if (currentRound === 'champion') navigate('/tournament/champion')
     else if (currentRound === 'eliminated') navigate('/tournament/eliminated')
-  }, [currentRound, resultVisible, navigate])
+  }, [currentRound, pendingResult, navigate])
 
   async function handleSimulate() {
     if (!sessionId) return
     setSimulating(true)
     setError(null)
     try {
-      const result = await simulateMatch(sessionId)
-      recordMatchResult(result)
-      setResultVisible(true)
+      setPendingResult(await simulateMatch(sessionId))
     } catch (err) {
       setError(apiErrorMessage(err))
     } finally {
       setSimulating(false)
     }
+  }
+
+  function handleResultAcknowledged() {
+    if (!pendingResult) return
+    recordMatchResult(pendingResult)
+    setPendingResult(null)
   }
 
   const roundLabel = ROUND_LABELS[currentRound] ?? currentRound
@@ -73,8 +82,8 @@ export function TournamentPage() {
 
       {error && <p className="text-center text-sm text-red-400">{error}</p>}
 
-      {resultVisible && lastResult ? (
-        <MatchResultPanel result={lastResult} onNext={() => setResultVisible(false)} />
+      {pendingResult ? (
+        <MatchAnimationScreen result={pendingResult} onNext={handleResultAcknowledged} />
       ) : (
         <section className="flex flex-col items-center gap-6">
           <h2 className="text-xl font-semibold text-slate-200">{roundLabel}</h2>

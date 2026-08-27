@@ -152,6 +152,22 @@ export interface Chemistry {
   }
 }
 
+export type MatchEventType = 'goal' | 'penalty' | 'penalty_miss' | 'yellow_card' | 'red_card'
+
+export interface MatchEvent {
+  minute: number
+  type: MatchEventType
+  team: 'home' | 'away'
+  player_name: string
+}
+
+export interface MatchNarrative {
+  score_home: number
+  score_away: number
+  events: MatchEvent[]
+  closing_text: string
+}
+
 export interface SimulationResult {
   opponent: {
     country: string
@@ -170,4 +186,5 @@ export interface SimulationResult {
   tournament_finished: boolean
   explanation: MatchExplanationItem[]
   chemistry: Chemistry
+  narrative: MatchNarrative
 }
