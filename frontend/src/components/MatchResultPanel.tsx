@@ -1,3 +1,4 @@
+import { GroupStandingsTable } from './GroupStandingsTable'
 import type { SimulationResult } from '../api/types'
 
 const RESULT_LABEL: Record<string, string> = {
@@ -55,7 +56,24 @@ export function MatchResultPanel({ result, onNext }: Props) {
           </p>
         )}
         <p className={`text-sm font-bold ${outcomeColor}`}>{label}</p>
+        {result.parallel_match && (
+          <p className="text-xs text-slate-500">
+            Mientras tanto en el grupo: {result.parallel_match.home.country}{' '}
+            {result.parallel_match.home.tournament_year} {result.parallel_match.home_goals}-
+            {result.parallel_match.away_goals} {result.parallel_match.away.country}{' '}
+            {result.parallel_match.away.tournament_year}
+          </p>
+        )}
       </header>
+
+      {result.group_table && (
+        <section className="flex flex-col gap-2">
+          <h3 className="text-center text-lg font-bold text-slate-200">
+            {result.group_table.group_complete ? 'Clasificacion final del grupo' : 'Clasificacion del grupo'}
+          </h3>
+          <GroupStandingsTable table={result.group_table} />
+        </section>
+      )}
 
       <section
         className={`glass-card flex flex-col items-center gap-2 rounded-2xl p-5 text-center ${

@@ -2,6 +2,7 @@ import axios from 'axios'
 import type {
   ActiveDraftSession,
   FormationName,
+  GroupTable,
   MeResponse,
   PassResult,
   RollResult,
@@ -73,6 +74,11 @@ export async function getTeam(sessionId: number): Promise<TeamMember[]> {
 
 export async function simulateMatch(sessionId: number): Promise<SimulationResult> {
   const { data } = await api.post<SimulationResult>(`/game/draft/${sessionId}/simulate`)
+  return data
+}
+
+export async function getGroupTable(sessionId: number): Promise<GroupTable> {
+  const { data } = await api.get<GroupTable>(`/game/draft/${sessionId}/group`)
   return data
 }
 

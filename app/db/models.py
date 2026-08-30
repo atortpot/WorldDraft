@@ -125,10 +125,18 @@ class DraftSession(Base):
     # layout de slots (ver app/game/formations.py) contra el que se valida
     # cada pick.
     formation: Mapped[Formation] = mapped_column(SqlEnum(Formation, name="formation"), nullable=False)
+    # Acumulado del propio usuario en la fase de grupos (3 partidos contra
+    # los 3 rivales de group_opponents); el de cada rival vive en su propia
+    # fila de GroupStageOpponent, ya que solo juega un partido (contra el
+    # usuario) en este modelo simplificado -- ver app/game/draft_service.py.
+    group_points: Mapped[int] = mapped_column(default=0, nullable=False)
+    group_goals_for: Mapped[int] = mapped_column(default=0, nullable=False)
+    group_goals_against: Mapped[int] = mapped_column(default=0, nullable=False)
 
     user: Mapped["User"] = relationship(back_populates="draft_sessions")
     picks: Mapped[list["DraftPick"]] = relationship(back_populates="draft_session")
     matches: Mapped[list["TournamentMatch"]] = relationship(back_populates="draft_session")
+    group_opponents: Mapped[list["GroupStageOpponent"]] = relationship(back_populates="draft_session")
 
 
 class DraftPick(Base):
@@ -145,6 +153,72 @@ class DraftPick(Base):
 
     draft_session: Mapped["DraftSession"] = relationship(back_populates="picks")
     player: Mapped["Player"] = relationship(back_populates="draft_picks")
+
+
+class GroupStageOpponent(Base):
+    """Uno de los 3 rivales historicos de la fase de grupos de una sesion,
+    sorteados de una vez al iniciar el draft (ver
+    app/game/draft_service.py:_generate_group_opponents). El usuario esta en
+    un grupo de 4 (el mismo + estos 3): points/goals_for/goals_against de
+    esta fila son SIEMPRE los del partido de este rival contra el usuario
+    (nunca un acumulado), para poder seguir usandolos como enfrentamiento
+    directo aunque el rival tambien haya jugado contra los otros 2 rivales
+    del grupo (ver GroupStageRivalMatch, mas abajo). El acumulado del total
+    de esos 3 partidos (el de aqui + los 2 de GroupStageRivalMatch) se
+    calcula al vuelo en draft_service._aggregate_rival_row, no se guarda.
+    El acumulado del propio usuario vive en
+    DraftSession.group_points/group_goals_for/group_goals_against.
+    """
+
+    __tablename__ = "group_stage_opponents"
+    __table_args__ = (
+        UniqueConstraint("draft_session_id", "slot", name="uq_group_opponent_session_slot"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    draft_session_id: Mapped[int] = mapped_column(ForeignKey("draft_sessions.id"), nullable=False)
+    # 1/2/3: en que partido de grupos (group_1/group_2/group_3) se juega
+    # contra este rival.
+    slot: Mapped[int] = mapped_column(nullable=False)
+    # country ya en formato "wiki_country" (el que usa Player.country), no
+    # el nombre crudo de WorldCupMatches.csv -- ver to_squads_country_name.
+    country: Mapped[str] = mapped_column(String(100), nullable=False)
+    tournament_year: Mapped[int] = mapped_column(nullable=False)
+    # fifa_points y goals_avg se calculan una vez al generar el grupo (son
+    # estaticos: dependen solo de equipo+año) y se guardan aqui para no
+    # tener que volver a resolver el nombre crudo de WorldCupMatches.csv en
+    # cada partido.
+    fifa_points: Mapped[float] = mapped_column(Float, nullable=False)
+    goals_avg: Mapped[float] = mapped_column(Float, nullable=False)
+    played: Mapped[bool] = mapped_column(default=False, nullable=False)
+    points: Mapped[int] = mapped_column(default=0, nullable=False)
+    goals_for: Mapped[int] = mapped_column(default=0, nullable=False)
+    goals_against: Mapped[int] = mapped_column(default=0, nullable=False)
+
+    draft_session: Mapped["DraftSession"] = relationship(back_populates="group_opponents")
+
+
+class GroupStageRivalMatch(Base):
+    """Uno de los 3 partidos entre rivales de la fase de grupos (rival
+    contra rival, nunca involucra al usuario) que completan el grupo real
+    de 4 equipos / 6 partidos: el usuario juega contra cada uno de los 3
+    rivales (esos resultados viven en GroupStageOpponent), y estos 3
+    partidos son los que faltan para que cada rival tambien tenga sus 3
+    jugados. Se simulan de golpe al terminar el group_3 (ver
+    draft_service._simulate_remaining_group_matches), nunca antes.
+
+    Los puntos de cada lado no se guardan aparte, se derivan de
+    home_goals/away_goals donde hagan falta (evita que puedan
+    desincronizarse del marcador)."""
+
+    __tablename__ = "group_stage_rival_matches"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    draft_session_id: Mapped[int] = mapped_column(ForeignKey("draft_sessions.id"), nullable=False)
+    home_opponent_id: Mapped[int] = mapped_column(ForeignKey("group_stage_opponents.id"), nullable=False)
+    away_opponent_id: Mapped[int] = mapped_column(ForeignKey("group_stage_opponents.id"), nullable=False)
+    home_goals: Mapped[int] = mapped_column(nullable=False)
+    away_goals: Mapped[int] = mapped_column(nullable=False)
 
 
 class TournamentMatch(Base):

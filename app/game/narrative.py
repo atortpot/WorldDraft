@@ -38,8 +38,11 @@ _GENERIC_RIVAL_YELLOW_RARE = ["Portero rival", "Delantero rival"]
 _GENERIC_RIVAL_RED_CENTRAL = ["Defensa central rival", "Centrocampista rival"]
 
 
-def _pick_score(result: str, win: float, draw: float, loss: float) -> tuple[int, int]:
-    """(goles de tu equipo, goles del rival), coherente con el resultado."""
+def pick_scoreline(result: str, win: float, draw: float, loss: float) -> tuple[int, int]:
+    """(goles de tu equipo, goles del rival), coherente con el resultado.
+    Publica (sin guion bajo) porque tambien la usa draft_service para
+    samplear el marcador de los partidos entre rivales de la fase de
+    grupos, que no tienen narrativa propia -- solo hace falta el marcador."""
     if result == "draw":
         return random.choice(_DRAW_SCORELINES)
 
@@ -245,7 +248,7 @@ def generate_match_events(match_data: dict) -> dict:
     away_team = match_data.get("away_team", [])
     chemistry = match_data.get("chemistry")
 
-    score_home, score_away = _pick_score(result, win, draw, loss)
+    score_home, score_away = pick_scoreline(result, win, draw, loss)
 
     used_minutes: set[int] = set()
     home_goal_range = (MIN_EVENT_MINUTE, MAX_EVENT_MINUTE)

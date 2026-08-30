@@ -120,6 +120,15 @@ async def get_team_endpoint(
     return await draft_service.get_draft_team(session_id, current_user.id, db)
 
 
+@router.get("/{session_id}/group")
+async def get_group_table_endpoint(
+    session_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await draft_service.get_group_table(session_id, current_user.id, db)
+
+
 @router.post("/{session_id}/simulate")
 async def simulate_endpoint(
     session_id: int,

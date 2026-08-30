@@ -3,6 +3,7 @@ calcular las metricas agregadas del equipo y simular el partido final contra
 un rival historico real.
 """
 
+import functools
 import random
 from collections import Counter
 from pathlib import Path
@@ -13,9 +14,18 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import DraftPick, DraftRound, DraftSession, DraftStatus, Formation, Player
+from app.db.models import (
+    DraftPick,
+    DraftRound,
+    DraftSession,
+    DraftStatus,
+    Formation,
+    GroupStageOpponent,
+    GroupStageRivalMatch,
+    Player,
+)
 from app.game.formations import is_slot_compatible, slots_for
-from app.game.narrative import generate_match_events
+from app.game.narrative import generate_match_events, pick_scoreline
 from app.model.fifa_data import (
     clean_worldcup_matches_team_name,
     fifa_points_at,
@@ -33,10 +43,10 @@ MIN_YEAR = 1994
 TEAM_SIZE = 11
 MAX_PASSES = 3
 
-# Torneo de 7 partidos: 3 de grupos (fase en la que un empate no elimina) +
-# 4 eliminatorias directas. GROUP_1/2/3 comparten fase (misma fuerza de
-# rival, mismo round_encoded) y solo se distinguen para llevar la cuenta de
-# en que partido de grupos va la sesion.
+# Torneo de 7 partidos: 3 de grupos (fase de liguilla, ver mas abajo) + 4
+# eliminatorias directas. GROUP_1/2/3 comparten fase (mismo round_encoded)
+# y solo se distinguen para llevar la cuenta de en que partido de grupos va
+# la sesion.
 ROUND_ORDER = [
     DraftRound.GROUP_1,
     DraftRound.GROUP_2,
@@ -46,11 +56,13 @@ ROUND_ORDER = [
     DraftRound.SEMI_FINAL,
     DraftRound.FINAL,
 ]
-KNOCKOUT_ROUNDS = {
-    DraftRound.ROUND_OF_16,
-    DraftRound.QUARTER_FINAL,
-    DraftRound.SEMI_FINAL,
-    DraftRound.FINAL,
+GROUP_ROUNDS = {DraftRound.GROUP_1, DraftRound.GROUP_2, DraftRound.GROUP_3}
+# En que slot de GroupStageOpponent (1/2/3, ver _generate_group_opponents)
+# se juega cada partido de grupos.
+GROUP_ROUND_TO_SLOT: dict[DraftRound, int] = {
+    DraftRound.GROUP_1: 1,
+    DraftRound.GROUP_2: 2,
+    DraftRound.GROUP_3: 3,
 }
 
 # Debe coincidir con ROUND_ENCODING de scripts/train_model.py (con el que se
@@ -66,12 +78,14 @@ ROUND_TO_MODEL_ENCODING = {
 }
 
 # Percentil (sobre todos los (equipo, torneo) de WorldCupMatches.csv
-# ordenados por puntos FIFA) del que se sortea el rival de cada ronda: en
-# grupos, nivel medio; en eliminatorias, cada vez mas alto.
+# ordenados por puntos FIFA) del que se sortean los rivales de cada ronda:
+# en eliminatorias, cada vez mas alto. GROUP_BAND es la franja (nivel medio)
+# de la que se sortean los 3 rivales de grupos DE UNA VEZ al iniciar el
+# draft (ver _generate_group_opponents) -- de ahi que sean "similares entre
+# si": los 3 salen de la misma franja estrecha, no de sorteos independientes
+# con umbrales distintos.
+GROUP_BAND: tuple[float, float] = (0.35, 0.65)
 ROUND_STRENGTH_BANDS: dict[DraftRound, tuple[float, float]] = {
-    DraftRound.GROUP_1: (0.35, 0.65),
-    DraftRound.GROUP_2: (0.35, 0.65),
-    DraftRound.GROUP_3: (0.35, 0.65),
     DraftRound.ROUND_OF_16: (0.55, 0.75),
     DraftRound.QUARTER_FINAL: (0.70, 0.85),
     DraftRound.SEMI_FINAL: (0.82, 0.93),
@@ -90,6 +104,9 @@ async def start_draft(user_id: int, formation: Formation, db: AsyncSession) -> i
         current_round=DraftRound.GROUP_1,
         formation=formation,
     )
+    # El grupo completo (3 rivales) se sortea de una vez aqui, no partido a
+    # partido: ver _generate_group_opponents.
+    draft_session.group_opponents = await _generate_group_opponents(db)
     db.add(draft_session)
     await db.commit()
     await db.refresh(draft_session)
@@ -476,52 +493,380 @@ def _get_team_appearances_with_points() -> pd.DataFrame:
     return _team_appearances_with_points
 
 
-def _select_opponent_team_year(round_: DraftRound) -> tuple[str, int]:
+def _select_team_year_from_band(
+    lo_pct: float, hi_pct: float, exclude: set[tuple[str, int]] | None = None
+) -> tuple[str, int] | None:
+    """(equipo, año) al azar dentro de la franja de percentil de puntos FIFA
+    [lo_pct, hi_pct) de todos los (equipo, torneo) de WorldCupMatches.csv.
+    `exclude` descarta pares ya elegidos (usado por _generate_group_opponents
+    para que los 3 rivales de un grupo sean siempre distintos entre si).
+    None si la franja, tras excluir, se queda sin candidatos."""
     ranked = _get_team_appearances_with_points()
-    lo_pct, hi_pct = ROUND_STRENGTH_BANDS[round_]
     total = len(ranked)
     lo_idx = int(total * lo_pct)
     hi_idx = max(int(total * hi_pct), lo_idx + 1)
     band = ranked.iloc[lo_idx:hi_idx]
+    if exclude:
+        band = band[~band.apply(lambda row: (row["team"], int(row["Year"])) in exclude, axis=1)]
+    if band.empty:
+        return None
     chosen = band.sample(1).iloc[0]
     return chosen["team"], int(chosen["Year"])
 
 
-async def get_opponent_for_round(round_: DraftRound, db: AsyncSession) -> dict:
-    team, year = _select_opponent_team_year(round_)
-    appearances = _get_team_appearances()
+def _select_opponent_team_year(round_: DraftRound) -> tuple[str, int]:
+    lo_pct, hi_pct = ROUND_STRENGTH_BANDS[round_]
+    chosen = _select_team_year_from_band(lo_pct, hi_pct)
+    assert chosen is not None  # la franja completa (sin exclude) siempre tiene candidatos
+    return chosen
 
+
+def _opponent_static_stats(team: str, year: int) -> dict:
+    """fifa_points y goals_avg -- estaticos, dependen solo de equipo+año, no
+    hace falta acceso a la base de datos."""
+    appearances = _get_team_appearances()
     team_matches = appearances[(appearances["team"] == team) & (appearances["Year"] == year)]
     goals_avg = float(team_matches["goals_scored"].mean())
-
     fifa_points = fifa_points_at(team, tournament_start_date(year)) or 0.0
+    return {"fifa_points": fifa_points, "goals_avg": goals_avg}
 
-    wiki_country = to_squads_country_name(team)
+
+async def _opponent_roster_stats(country: str, year: int, db: AsyncSession) -> tuple[float, list[dict]]:
+    """(player_rating_avg, jugadores reales) de la plantilla de ese
+    pais/año en la tabla players -- puede venir vacia si esa combinacion no
+    esta en la tabla, en cuyo caso rating_avg es 0 y players []. Ver
+    narrative.generate_match_events, que usa `players` para elegir
+    goleador real en vez del generico "Jugador rival" cuando hay datos."""
     roster = (
-        (
-            await db.execute(
-                select(Player).where(Player.country == wiki_country, Player.tournament_year == year)
-            )
-        )
+        (await db.execute(select(Player).where(Player.country == country, Player.tournament_year == year)))
         .scalars()
         .all()
     )
     rating_avg = float(mean(p.rating for p in roster)) if roster else 0.0
+    players = [{"name": p.name, "position": p.position.value, "rating": p.rating} for p in roster]
+    return rating_avg, players
+
+
+async def get_opponent_for_round(round_: DraftRound, db: AsyncSession) -> dict:
+    team, year = _select_opponent_team_year(round_)
+    static_stats = _opponent_static_stats(team, year)
+    wiki_country = to_squads_country_name(team)
+    rating_avg, players = await _opponent_roster_stats(wiki_country, year, db)
 
     return {
         "country": wiki_country,
         "tournament_year": year,
-        "fifa_points": fifa_points,
+        "fifa_points": static_stats["fifa_points"],
         "player_rating_avg": rating_avg,
-        "goals_avg": goals_avg,
-        # Jugadores reales del rival para esta ronda (puede estar vacio si
-        # esa seleccion/año no esta en la tabla players): ver
-        # narrative.generate_match_events, que los usa para elegir goleador
-        # en vez del generico "Jugador rival" cuando hay datos.
-        "players": [
-            {"name": p.name, "position": p.position.value, "rating": p.rating} for p in roster
-        ],
+        "goals_avg": static_stats["goals_avg"],
+        "players": players,
     }
+
+
+async def _generate_group_opponents(db: AsyncSession) -> list[GroupStageOpponent]:
+    """3 rivales historicos para la fase de grupos, sorteados de la misma
+    franja de percentil de puntos FIFA (GROUP_BAND) -- de ahi que sean
+    "similares entre si" -- y siempre distintos entre ellos. Se generan de
+    una vez al iniciar el draft (start_draft) y quedan fijos durante toda
+    la fase de grupos: antes cada partido de grupos sorteaba un rival nuevo
+    en el momento de simularlo, sin garantia de que no se repitiera el
+    mismo entre group_1/2/3 ni de que sobreviviera a una recarga de
+    pagina."""
+    lo_pct, hi_pct = GROUP_BAND
+    chosen: list[tuple[str, int]] = []
+    for _ in range(3):
+        pair = _select_team_year_from_band(lo_pct, hi_pct, exclude=set(chosen))
+        if pair is None:
+            raise DraftError("No hay suficientes rivales historicos distintos para generar el grupo")
+        chosen.append(pair)
+
+    opponents = []
+    for slot, (team, year) in enumerate(chosen, start=1):
+        static_stats = _opponent_static_stats(team, year)
+        opponents.append(
+            GroupStageOpponent(
+                slot=slot,
+                country=to_squads_country_name(team),
+                tournament_year=year,
+                fifa_points=static_stats["fifa_points"],
+                goals_avg=static_stats["goals_avg"],
+            )
+        )
+    return opponents
+
+
+async def _group_opponent_full_stats(opponent: GroupStageOpponent, db: AsyncSession) -> dict:
+    """Mismo shape que get_opponent_for_round, pero para un rival de grupo
+    ya fijado (fifa_points/goals_avg ya guardados; solo la plantilla real
+    hace falta resolverla contra la base de datos, porque puede cambiar
+    entre pases del script de ratings)."""
+    rating_avg, players = await _opponent_roster_stats(opponent.country, opponent.tournament_year, db)
+    return {
+        "country": opponent.country,
+        "tournament_year": opponent.tournament_year,
+        "fifa_points": opponent.fifa_points,
+        "player_rating_avg": rating_avg,
+        "goals_avg": opponent.goals_avg,
+        "players": players,
+    }
+
+
+async def _group_opponents_for_session(draft_session_id: int, db: AsyncSession) -> list[GroupStageOpponent]:
+    stmt = (
+        select(GroupStageOpponent)
+        .where(GroupStageOpponent.draft_session_id == draft_session_id)
+        .order_by(GroupStageOpponent.slot)
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def _rival_matches_for_session(draft_session_id: int, db: AsyncSession) -> list[GroupStageRivalMatch]:
+    stmt = select(GroupStageRivalMatch).where(GroupStageRivalMatch.draft_session_id == draft_session_id)
+    return list((await db.execute(stmt)).scalars().all())
+
+
+# Round de modelo para los partidos rival-contra-rival: son partidos de
+# fase de grupos igual que los del usuario (ROUND_TO_MODEL_ENCODING ya
+# mapea los 3 group_N al mismo valor, "groups"), asi que se reutiliza tal
+# cual, sin necesitar una ronda de DraftSession real para ellos.
+_GROUP_STAGE_MODEL_ENCODING = 1
+
+
+async def _simulate_rival_match(
+    opponent_a: GroupStageOpponent, opponent_b: GroupStageOpponent, db: AsyncSession
+) -> GroupStageRivalMatch:
+    """Simula el partido entre estos dos rivales (nunca involucra al
+    usuario). Se llama una vez por cada ronda de grupos, a la vez que el
+    partido del usuario: mientras el usuario juega contra el rival de esa
+    ronda, los otros 2 rivales juegan entre si -- la misma jornada, dos
+    partidos a la vez, como en un grupo real. Asi, cuando el usuario acaba
+    los 3 suyos, ya se han simulado tambien los 3 que le faltaban al grupo.
+    Reutiliza el mismo motor ML que el resto del torneo (simulate_match +
+    pick_scoreline para el marcador, igual que con el usuario), con las
+    stats reales de cada rival (fifa_points/player_rating_avg/goals_avg) y
+    sin bonus de quimica -- ese bonus es especifico del equipo armado a
+    mano por el usuario, no aplica a dos selecciones historicas
+    enfrentandose."""
+    stats_a = await _group_opponent_full_stats(opponent_a, db)
+    stats_b = await _group_opponent_full_stats(opponent_b, db)
+    team_a_stats = {
+        "fifa_points": stats_a["fifa_points"],
+        "player_rating_avg": stats_a["player_rating_avg"],
+        "goals_avg": stats_a["goals_avg"],
+    }
+    team_b_stats = {
+        "fifa_points": stats_b["fifa_points"],
+        "player_rating_avg": stats_b["player_rating_avg"],
+        "goals_avg": stats_b["goals_avg"],
+    }
+    outcome = simulate_match(
+        team_a_stats, team_b_stats, round_encoded=_GROUP_STAGE_MODEL_ENCODING, chemistry_bonus=0.0
+    )
+    goals_a, goals_b = pick_scoreline(outcome["result"], outcome["win"], outcome["draw"], outcome["loss"])
+
+    match = GroupStageRivalMatch(
+        draft_session_id=opponent_a.draft_session_id,
+        home_opponent_id=opponent_a.id,
+        away_opponent_id=opponent_b.id,
+        home_goals=goals_a,
+        away_goals=goals_b,
+    )
+    db.add(match)
+    return match
+
+
+def _group_row_for_user(draft_session: DraftSession, opponents: list[GroupStageOpponent]) -> dict:
+    return {
+        "is_user": True,
+        "slot": None,
+        "country": None,
+        "tournament_year": None,
+        "played": sum(1 for opp in opponents if opp.played),
+        "points": draft_session.group_points,
+        "goals_for": draft_session.group_goals_for,
+        "goals_against": draft_session.group_goals_against,
+    }
+
+
+def _aggregate_rival_row(opponent: GroupStageOpponent, rival_matches: list[GroupStageRivalMatch]) -> dict:
+    """points/goals_for/goals_against del rival, sumando su partido contra
+    el usuario (GroupStageOpponent, sin tocar) y los partidos contra los
+    otros rivales que ya se hayan simulado (GroupStageRivalMatch -- puede
+    ser 0, 1 o 2 en cualquier momento, ya no solo al terminar el grupo: ver
+    _simulate_rival_match). vs_user_points/vs_user_played se guardan aparte,
+    sin agregar: el enfrentamiento directo con el usuario (ver
+    _make_group_comparator) necesita ESE partido concreto -- y saber si ya
+    se jugo REALMENTE, que ya no es lo mismo que "played > 0": con el
+    reparto por jornadas, un rival puede jugar su partido contra otro
+    rival antes que el suyo contra el usuario (p.ej. el rival de group_2
+    juega contra el de group_3 en la jornada de group_1, antes de haberse
+    enfrentado el mismo al usuario)."""
+    points = opponent.points
+    goals_for = opponent.goals_for
+    goals_against = opponent.goals_against
+    played = 1 if opponent.played else 0
+
+    for match in rival_matches:
+        if match.home_opponent_id == opponent.id:
+            own_goals, other_goals = match.home_goals, match.away_goals
+        elif match.away_opponent_id == opponent.id:
+            own_goals, other_goals = match.away_goals, match.home_goals
+        else:
+            continue
+        played += 1
+        goals_for += own_goals
+        goals_against += other_goals
+        if own_goals > other_goals:
+            points += 3
+        elif own_goals == other_goals:
+            points += 1
+
+    return {
+        "is_user": False,
+        "slot": opponent.slot,
+        "country": opponent.country,
+        "tournament_year": opponent.tournament_year,
+        "played": played,
+        "points": points,
+        "goals_for": goals_for,
+        "goals_against": goals_against,
+        "vs_user_played": opponent.played,
+        "vs_user_points": opponent.points,
+    }
+
+
+def _rival_h2h_points(rival_matches: list[GroupStageRivalMatch], opponents: list[GroupStageOpponent]) -> dict:
+    """(slot_a, slot_b) -> puntos que se llevo el equipo del slot_a en su
+    partido contra el del slot_b (3/1/0), en las dos direcciones -- el
+    enfrentamiento directo entre dos rivales (ver _make_group_comparator)."""
+    slot_by_opponent_id = {o.id: o.slot for o in opponents}
+    lookup: dict[tuple[int, int], int] = {}
+    for match in rival_matches:
+        slot_home = slot_by_opponent_id[match.home_opponent_id]
+        slot_away = slot_by_opponent_id[match.away_opponent_id]
+        if match.home_goals > match.away_goals:
+            points_home, points_away = 3, 0
+        elif match.home_goals == match.away_goals:
+            points_home, points_away = 1, 1
+        else:
+            points_home, points_away = 0, 3
+        lookup[(slot_home, slot_away)] = points_home
+        lookup[(slot_away, slot_home)] = points_away
+    return lookup
+
+
+def _make_group_comparator(rival_h2h: dict[tuple[int, int], int]):
+    """Orden de 1o a 4o: puntos, luego diferencia de goles, luego
+    enfrentamiento directo. `rival_h2h` (ver _rival_h2h_points) es lo que
+    permite que el enfrentamiento directo tambien se pueda aplicar entre
+    dos rivales, no solo entre el usuario y un rival -- antes de simular
+    los partidos rival-contra-rival no habia forma de saberlo."""
+
+    def compare(a: dict, b: dict) -> int:
+        if a["points"] != b["points"]:
+            return b["points"] - a["points"]
+        if a["goal_diff"] != b["goal_diff"]:
+            return b["goal_diff"] - a["goal_diff"]
+
+        if a["is_user"] or b["is_user"]:
+            rival = b if a["is_user"] else a
+            if rival["vs_user_played"]:
+                if rival["vs_user_points"] == 3:  # el rival gano el enfrentamiento directo
+                    return 1 if a["is_user"] else -1
+                if rival["vs_user_points"] == 0:  # el usuario gano el enfrentamiento directo
+                    return -1 if a["is_user"] else 1
+            return 0
+
+        points_a_vs_b = rival_h2h.get((a["slot"], b["slot"]))
+        if points_a_vs_b == 3:
+            return -1  # a gano el enfrentamiento directo, va antes
+        if points_a_vs_b == 0:
+            return 1  # b gano el enfrentamiento directo, va antes
+        return 0  # empataron entre si, o todavia no han jugado: no desempata mas
+
+    return compare
+
+
+def _rank_group(
+    draft_session: DraftSession,
+    opponents: list[GroupStageOpponent],
+    rival_matches: list[GroupStageRivalMatch],
+) -> list[dict]:
+    # "played" de cada fila sale directamente de cuantos partidos hay
+    # registrados para ese equipo (ver _group_row_for_user/
+    # _aggregate_rival_row), no de si el grupo esta completo: con el
+    # reparto por jornadas (ver _simulate_rival_match) los 4 equipos van
+    # sumando partidos jugados en paralelo, ronda a ronda, no todos de
+    # golpe al final.
+    rows = [_group_row_for_user(draft_session, opponents)]
+    rows.extend(_aggregate_rival_row(opponent, rival_matches) for opponent in opponents)
+
+    for row in rows:
+        row["goal_diff"] = row["goals_for"] - row["goals_against"]
+
+    comparator = _make_group_comparator(_rival_h2h_points(rival_matches, opponents))
+    return sorted(rows, key=functools.cmp_to_key(comparator))
+
+
+def _serialize_other_matches(
+    rival_matches: list[GroupStageRivalMatch], opponents: list[GroupStageOpponent]
+) -> list[dict]:
+    by_id = {o.id: o for o in opponents}
+    return [
+        {
+            "home": {
+                "country": by_id[match.home_opponent_id].country,
+                "tournament_year": by_id[match.home_opponent_id].tournament_year,
+            },
+            "away": {
+                "country": by_id[match.away_opponent_id].country,
+                "tournament_year": by_id[match.away_opponent_id].tournament_year,
+            },
+            "home_goals": match.home_goals,
+            "away_goals": match.away_goals,
+        }
+        for match in rival_matches
+    ]
+
+
+def _serialize_group_table(
+    ranked_rows: list[dict], group_complete: bool, other_matches: list[dict]
+) -> dict:
+    return {
+        "teams": [
+            {
+                "is_user": row["is_user"],
+                "country": row["country"],
+                "tournament_year": row["tournament_year"],
+                "played": row["played"],
+                "points": row["points"],
+                "goals_for": row["goals_for"],
+                "goals_against": row["goals_against"],
+                "goal_diff": row["goal_diff"],
+                "qualified": (ranked_rows.index(row) < 2) if group_complete else None,
+            }
+            for row in ranked_rows
+        ],
+        "group_complete": group_complete,
+        # Los partidos rival-contra-rival simulados hasta ahora (0 a 3, uno
+        # por ronda de grupos jugada -- ver _simulate_rival_match), para que
+        # el frontend pueda enseñar "que paso en el resto del grupo".
+        "other_matches": other_matches,
+    }
+
+
+async def get_group_table(draft_session_id: int, user_id: int, db: AsyncSession) -> dict:
+    draft_session = await _get_session_or_raise(draft_session_id, db, user_id)
+    opponents = await _group_opponents_for_session(draft_session_id, db)
+    rival_matches = await _rival_matches_for_session(draft_session_id, db)
+    group_complete = len(opponents) == 3 and all(o.played for o in opponents)
+    ranked = _rank_group(draft_session, opponents, rival_matches)
+    # Los partidos rival-contra-rival simulados hasta ahora, no solo cuando
+    # el grupo esta completo: se van acumulando ronda a ronda (ver
+    # _simulate_rival_match), asi que la tabla "en tiempo real" tambien
+    # puede enseñarlos progresivamente.
+    other_matches = _serialize_other_matches(rival_matches, opponents)
+    return _serialize_group_table(ranked, group_complete, other_matches)
 
 
 async def simulate_draft_match(draft_session_id: int, user_id: int, db: AsyncSession) -> dict:
@@ -534,8 +879,18 @@ async def simulate_draft_match(draft_session_id: int, user_id: int, db: AsyncSes
         raise DraftError(f"El equipo debe tener {TEAM_SIZE} jugadores para simular (tiene {len(team)})")
 
     current_round = draft_session.current_round
+    is_group = current_round in GROUP_ROUNDS
     team_stats = await calculate_team_stats(draft_session_id, user_id, db)
-    opponent = await get_opponent_for_round(current_round, db)
+
+    group_opponents: list[GroupStageOpponent] = []
+    group_opponent_row: GroupStageOpponent | None = None
+    if is_group:
+        group_opponents = await _group_opponents_for_session(draft_session_id, db)
+        slot = GROUP_ROUND_TO_SLOT[current_round]
+        group_opponent_row = next(o for o in group_opponents if o.slot == slot)
+        opponent = await _group_opponent_full_stats(group_opponent_row, db)
+    else:
+        opponent = await get_opponent_for_round(current_round, db)
 
     team_a_stats = {
         "fifa_points": team_stats["fifa_points_avg"],
@@ -557,35 +912,10 @@ async def simulate_draft_match(draft_session_id: int, user_id: int, db: AsyncSes
         team_a_stats, team_b_stats, round_encoded=round_encoded, chemistry_bonus=chemistry_bonus
     )
 
-    is_knockout = current_round in KNOCKOUT_ROUNDS
-    penalties = None
-    advanced: bool
-
-    if outcome["result"] == "win":
-        advanced = True
-    elif outcome["result"] == "loss":
-        advanced = False
-    else:
-        # Empate: en grupos cuenta como avance; en eliminatorias se resuelve
-        # a penaltis, sin ventaja para ningun lado (50/50).
-        if is_knockout:
-            won_penalties = random.random() < 0.5
-            penalties = {"took_place": True, "won_by_team": won_penalties}
-            advanced = won_penalties
-        else:
-            advanced = True
-
-    if not advanced:
-        draft_session.current_round = DraftRound.ELIMINATED
-    elif current_round == DraftRound.FINAL:
-        draft_session.current_round = DraftRound.CHAMPION
-    else:
-        draft_session.current_round = ROUND_ORDER[ROUND_ORDER.index(current_round) + 1]
-
-    await db.commit()
-
-    tournament_finished = draft_session.current_round in (DraftRound.ELIMINATED, DraftRound.CHAMPION)
-
+    # El marcador se decide aqui (no mas abajo) porque group_stage necesita
+    # los goles reales para acumular goals_for/goals_against -- si se
+    # generase despues, el marcador que ve el usuario en la animacion podria
+    # no coincidir con la diferencia de goles de la tabla del grupo.
     narrative = generate_match_events(
         {
             "result": outcome["result"],
@@ -598,6 +928,85 @@ async def simulate_draft_match(draft_session_id: int, user_id: int, db: AsyncSes
             "away_team": opponent["players"],
         }
     )
+    score_home = narrative["score_home"]
+    score_away = narrative["score_away"]
+
+    penalties = None
+    group_table = None
+    parallel_match_serialized = None
+    advanced: bool
+
+    if is_group:
+        assert group_opponent_row is not None
+        if outcome["result"] == "win":
+            user_points, opponent_points = 3, 0
+        elif outcome["result"] == "loss":
+            user_points, opponent_points = 0, 3
+        else:
+            user_points, opponent_points = 1, 1
+
+        draft_session.group_points += user_points
+        draft_session.group_goals_for += score_home
+        draft_session.group_goals_against += score_away
+
+        group_opponent_row.played = True
+        group_opponent_row.points = opponent_points
+        group_opponent_row.goals_for = score_away  # goles del rival = los que encaja el usuario
+        group_opponent_row.goals_against = score_home  # goles que encaja el rival = los que mete el usuario
+
+        # Los otros 2 rivales (los que no juegan contra el usuario esta
+        # ronda) juegan entre si a la vez -- la misma jornada, dos partidos
+        # a la vez, como en un grupo real: asi cuando el usuario termina
+        # sus 3 partidos, el grupo ya tiene sus 6.
+        other_pair = [o for o in group_opponents if o.slot != slot]
+        assert len(other_pair) == 2
+        # Se lee ANTES de simular y añadir el partido de esta ronda: la
+        # sesion de SQLAlchemy hace autoflush antes de un SELECT, asi que
+        # consultar despues de db.add(parallel_match) haria que este mismo
+        # partido se colase en previous_rival_matches tambien -- contandolo
+        # dos veces al construir rival_matches mas abajo.
+        previous_rival_matches = await _rival_matches_for_session(draft_session_id, db)
+        parallel_match = await _simulate_rival_match(other_pair[0], other_pair[1], db)
+        rival_matches = [*previous_rival_matches, parallel_match]
+
+        ranked = _rank_group(draft_session, group_opponents, rival_matches)
+        group_complete = current_round == DraftRound.GROUP_3
+
+        if group_complete:
+            user_rank = next(i for i, row in enumerate(ranked) if row["is_user"])
+            advanced = user_rank < 2  # top 2 de 4 clasifican a octavos
+            draft_session.current_round = DraftRound.ROUND_OF_16 if advanced else DraftRound.ELIMINATED
+        else:
+            # Un partido de grupos nunca elimina por si solo (a diferencia
+            # de las eliminatorias): se juegan los 3 pase lo que pase, y la
+            # clasificacion se decide por tabla al terminar el group_3.
+            advanced = True
+            draft_session.current_round = ROUND_ORDER[ROUND_ORDER.index(current_round) + 1]
+
+        other_matches = _serialize_other_matches(rival_matches, group_opponents)
+        group_table = _serialize_group_table(ranked, group_complete, other_matches)
+        parallel_match_serialized = _serialize_other_matches([parallel_match], group_opponents)[0]
+    else:
+        if outcome["result"] == "win":
+            advanced = True
+        elif outcome["result"] == "loss":
+            advanced = False
+        else:
+            # Empate en eliminatorias: penaltis, sin ventaja para ningun lado.
+            won_penalties = random.random() < 0.5
+            penalties = {"took_place": True, "won_by_team": won_penalties}
+            advanced = won_penalties
+
+        if not advanced:
+            draft_session.current_round = DraftRound.ELIMINATED
+        elif current_round == DraftRound.FINAL:
+            draft_session.current_round = DraftRound.CHAMPION
+        else:
+            draft_session.current_round = ROUND_ORDER[ROUND_ORDER.index(current_round) + 1]
+
+    await db.commit()
+
+    tournament_finished = draft_session.current_round in (DraftRound.ELIMINATED, DraftRound.CHAMPION)
 
     return {
         "opponent": {"country": opponent["country"], "tournament_year": opponent["tournament_year"]},
@@ -615,4 +1024,8 @@ async def simulate_draft_match(draft_session_id: int, user_id: int, db: AsyncSes
         "explanation": explanation,
         "chemistry": team_stats["chemistry"],
         "narrative": narrative,
+        "group_table": group_table,
+        # El partido rival-contra-rival que se simulo a la vez que este
+        # (ver _simulate_rival_match); null fuera de la fase de grupos.
+        "parallel_match": parallel_match_serialized,
     }

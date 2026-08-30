@@ -168,6 +168,45 @@ export interface MatchNarrative {
   closing_text: string
 }
 
+// Una fila de la tabla de grupos (el propio equipo o uno de los 3 rivales
+// historicos). goal_diff siempre viene calculado por el backend. `qualified`
+// es null hasta que termina el group_3 (played=3 partidos del usuario);
+// entonces true/false para las 4 filas segun si quedaron en el top 2.
+export interface GroupTeamRow {
+  is_user: boolean
+  country: string | null
+  tournament_year: number | null
+  played: number
+  points: number
+  goals_for: number
+  goals_against: number
+  goal_diff: number
+  qualified: boolean | null
+}
+
+export interface GroupMatchTeam {
+  country: string
+  tournament_year: number
+}
+
+// Uno de los 3 partidos rival-contra-rival del grupo (nunca involucra al
+// usuario), simulados de golpe al terminar el group_3. Solo hay datos
+// cuando group_complete es true.
+export interface GroupOtherMatch {
+  home: GroupMatchTeam
+  away: GroupMatchTeam
+  home_goals: number
+  away_goals: number
+}
+
+export interface GroupTable {
+  // Siempre 4 filas, ya ordenadas de 1o a 4o (puntos, diferencia de goles,
+  // enfrentamiento directo -- ver _make_group_comparator en el backend).
+  teams: GroupTeamRow[]
+  group_complete: boolean
+  other_matches: GroupOtherMatch[]
+}
+
 export interface SimulationResult {
   opponent: {
     country: string
@@ -187,4 +226,10 @@ export interface SimulationResult {
   explanation: MatchExplanationItem[]
   chemistry: Chemistry
   narrative: MatchNarrative
+  // Solo presente cuando `round` es group_1/2/3; null en eliminatorias.
+  group_table: GroupTable | null
+  // El partido entre los otros 2 rivales del grupo, simulado a la vez que
+  // este (ver _simulate_rival_match en el backend). Solo presente cuando
+  // `round` es group_1/2/3; null en eliminatorias.
+  parallel_match: GroupOtherMatch | null
 }
