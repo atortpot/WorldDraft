@@ -11,7 +11,7 @@ from statistics import mean
 
 import pandas as pd
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -147,12 +147,23 @@ async def _available_players(
     draft_session_id: int, country: str, year: int, db: AsyncSession
 ) -> list[Player]:
     already_picked = select(DraftPick.player_id).where(DraftPick.draft_session_id == draft_session_id)
+    # Mismo jugador real en otro Mundial (mismo name+country, distinto
+    # tournament_year) que uno ya elegido: la tabla players tiene una fila
+    # por jugador y edicion, asi que excluir solo por player_id no bastaba
+    # -- se podia elegir p.ej. a Ronaldo de Brasil 2002 y tambien a Ronaldo
+    # de Brasil 2006, dos filas distintas de la misma persona.
+    already_picked_identities = (
+        select(Player.name, Player.country)
+        .join(DraftPick, DraftPick.player_id == Player.id)
+        .where(DraftPick.draft_session_id == draft_session_id)
+    )
     stmt = (
         select(Player)
         .where(
             Player.country == country,
             Player.tournament_year == year,
             Player.id.notin_(already_picked),
+            tuple_(Player.name, Player.country).notin_(already_picked_identities),
         )
         # Alfabetico por nombre (no por rating): que el orden de la tirada no
         # de ninguna pista sobre quien es el mejor jugador, en Clasico igual
