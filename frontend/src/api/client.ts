@@ -11,17 +11,26 @@ import type {
   TournamentHistory,
 } from './types'
 
-// En desarrollo, VITE_API_URL no esta definida: baseURL queda '' y las
+// En desarrollo (import.meta.env.PROD === false), baseURL queda '' y las
 // rutas relativas las reenvia el proxy de Vite (vite.config.ts) a la API
-// FastAPI en http://localhost:8000. En produccion, VITE_API_URL apunta a
-// la URL publica del servicio backend en Railway (se incrusta en el
-// bundle en tiempo de BUILD, ver frontend/Dockerfile) porque frontend y
-// backend son dos servicios en dominios distintos, sin proxy entre ellos.
+// FastAPI en http://localhost:8000. En produccion, baseURL es '/api':
+// nginx (frontend/nginx.conf) hace de proxy inverso de /api/* hacia el
+// backend en Railway, para que el navegador solo vea
+// worlddraft.up.railway.app en todo momento -- la cookie de sesion pasa a
+// ser same-site respecto al frontend en vez de cross-site entre dos
+// dominios *.up.railway.app distintos, que es lo que la hace fiable en
+// navegadores que bloquean cookies de terceros (Safari ITP, el retiro
+// progresivo en Chrome). Antes esto salia de VITE_API_URL (variable de
+// build): se quito a proposito, no solo porque /api ya no necesita
+// configurarse, sino porque un VITE_API_URL con la URL directa del
+// backend que hubiera quedado puesta en Railway de una configuracion
+// anterior habria seguido apuntando ahi y pisado el proxy sin que se
+// notara.
 // withCredentials: true para que el navegador mande la cookie httpOnly de
 // sesion (worlddraftauth) en cada peticion -- la persistencia de sesion
 // depende enteramente de esa cookie, el frontend ya no gestiona ningun
 // token en memoria ni cabecera Authorization.
-const api = axios.create({ baseURL: import.meta.env.VITE_API_URL || '', withCredentials: true })
+const api = axios.create({ baseURL: import.meta.env.PROD ? '/api' : '', withCredentials: true })
 
 export async function register(email: string, password: string): Promise<void> {
   await api.post('/auth/register', { email, password })

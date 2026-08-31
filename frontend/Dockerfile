@@ -14,15 +14,10 @@ RUN pnpm install --frozen-lockfile
 
 COPY . .
 
-# Vite incrusta las variables VITE_* en el bundle en tiempo de BUILD, no de
-# arranque del contenedor -- por eso esto es un ARG (parametro de build)
-# ademas de ENV, y hay que fijarlo como build arg en Railway (o con
-# `docker build --build-arg VITE_API_URL=...`), no como variable de entorno
-# normal del servicio: cambiarla luego sin reconstruir la imagen no tiene
-# ningun efecto.
-ARG VITE_API_URL
-ENV VITE_API_URL=$VITE_API_URL
-
+# baseURL en produccion es '/api' a secas (frontend/src/api/client.ts,
+# via import.meta.env.PROD) -- no hace falta ningun build arg para que el
+# frontend sepa donde esta el backend, nginx.conf lo resuelve con el
+# proxy inverso de /api/ hacia Railway.
 RUN pnpm run build
 
 FROM nginx:alpine
