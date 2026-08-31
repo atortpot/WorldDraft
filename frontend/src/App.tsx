@@ -9,6 +9,7 @@ import { FormationPage } from './pages/FormationPage'
 import { HomePage } from './pages/HomePage'
 import { LoginPage } from './pages/LoginPage'
 import { TournamentPage } from './pages/TournamentPage'
+import { TournamentSummaryPage } from './pages/TournamentSummaryPage'
 
 function App() {
   return (
@@ -27,6 +28,10 @@ function App() {
           <Route
             path="/tournament/eliminated"
             element={<RequireAuth><EliminatedPage /></RequireAuth>}
+          />
+          <Route
+            path="/tournament/summary"
+            element={<RequireAuth><TournamentSummaryPage /></RequireAuth>}
           />
         </Routes>
       </DraftProvider>

@@ -22,10 +22,11 @@ from app.db.models import (
     Formation,
     GroupStageOpponent,
     GroupStageRivalMatch,
+    KnockoutMatch,
     Player,
 )
 from app.game.formations import is_slot_compatible, slots_for
-from app.game.narrative import generate_match_events, pick_scoreline
+from app.game.narrative import closing_text, generate_extra_time_events, generate_match_events, pick_scoreline
 from app.model.fifa_data import (
     clean_worldcup_matches_team_name,
     fifa_points_at,
@@ -153,7 +154,10 @@ async def _available_players(
             Player.tournament_year == year,
             Player.id.notin_(already_picked),
         )
-        .order_by(Player.position, Player.rating.desc())
+        # Alfabetico por nombre (no por rating): que el orden de la tirada no
+        # de ninguna pista sobre quien es el mejor jugador, en Clasico igual
+        # que en Folgar Mode.
+        .order_by(Player.position, Player.name)
     )
     result = await db.execute(stmt)
     return list(result.scalars().all())
@@ -869,6 +873,93 @@ async def get_group_table(draft_session_id: int, user_id: int, db: AsyncSession)
     return _serialize_group_table(ranked, group_complete, other_matches)
 
 
+_GOAL_EVENT_TYPES = {"goal", "penalty"}
+
+
+def _goal_events(events: list[dict]) -> list[dict]:
+    """Solo los eventos de gol (normal o de penalti) de la narrativa de un
+    partido -- lo unico que hace falta guardar para poder reconstruir
+    "goleadores con sus minutos" en GET /history; tarjetas y penaltis
+    fallados no se persisten."""
+    return [event for event in events if event["type"] in _GOAL_EVENT_TYPES]
+
+
+# --- Tanda de penaltis en eliminatorias ---
+
+_PENALTY_SUCCESS_RATE = 0.75  # tasa media historica de acierto en Mundiales
+_PENALTY_INITIAL_ROUNDS = 5
+_FALLBACK_PENALTY_TAKER = "Jugador rival"  # mismo fallback que narrative._FALLBACK_RIVAL_SCORER
+
+
+def _penalty_taker_order(players: list[dict]) -> list[str]:
+    """Orden de lanzadores: primero todos los FW/MF (de mejor a peor
+    rating), luego el resto (DF/GK, de mejor a peor rating) -- "los
+    jugadores con mejor rating, priorizando FW y MF" antepone la posicion
+    al rating puro cuando compiten entre si. Si la tanda llega a muerte
+    subita y se agota la lista, se repite desde el principio (regla real:
+    todo el equipo tira una vez antes de repetir lanzador). Sin jugadores
+    (rival sin plantilla real en la BD) cae a un unico nombre generico."""
+    ranked = sorted(
+        players,
+        key=lambda p: (0 if p.get("position") in ("forward", "midfielder") else 1, -(p.get("rating") or 0.0)),
+    )
+    names = [p["name"] for p in ranked]
+    return names or [_FALLBACK_PENALTY_TAKER]
+
+
+def _penalty_lead_is_insurmountable(home_score: int, away_score: int, home_taken: int, away_taken: int) -> bool:
+    home_remaining = _PENALTY_INITIAL_ROUNDS - home_taken
+    away_remaining = _PENALTY_INITIAL_ROUNDS - away_taken
+    return home_score > away_score + away_remaining or away_score > home_score + home_remaining
+
+
+def _simulate_penalty_shootout(home_takers: list[str], away_takers: list[str]) -> dict:
+    """Tanda realista: hasta 5 lanzamientos iniciales por equipo (se corta
+    antes en cuanto uno de los dos ya no puede alcanzar al otro, la regla
+    real: por eso "entre 3 y 5"), y muerte subita de 1 en 1 si sigue
+    empatado tras los 5. 75% de acierto por lanzamiento. Casa (el usuario)
+    tira primero en cada ronda; en muerte subita solo se compara el
+    marcador una vez han tirado los dos en esa ronda (si se comparase justo
+    despues del de casa, un gol suyo terminaria la tanda sin dejar
+    responder al visitante)."""
+    kicks: list[dict] = []
+    home_score = away_score = 0
+    home_taken = away_taken = 0
+
+    while True:
+        taker = home_takers[home_taken % len(home_takers)]
+        scored = random.random() < _PENALTY_SUCCESS_RATE
+        kicks.append({"team": "home", "player_name": taker, "scored": scored})
+        home_taken += 1
+        if scored:
+            home_score += 1
+
+        sudden_death = home_taken > _PENALTY_INITIAL_ROUNDS
+        if not sudden_death and _penalty_lead_is_insurmountable(home_score, away_score, home_taken, away_taken):
+            break
+
+        taker = away_takers[away_taken % len(away_takers)]
+        scored = random.random() < _PENALTY_SUCCESS_RATE
+        kicks.append({"team": "away", "player_name": taker, "scored": scored})
+        away_taken += 1
+        if scored:
+            away_score += 1
+
+        sudden_death = away_taken > _PENALTY_INITIAL_ROUNDS
+        if sudden_death:
+            if home_score != away_score:
+                break
+        elif _penalty_lead_is_insurmountable(home_score, away_score, home_taken, away_taken):
+            break
+
+    return {
+        "home_goals": home_score,
+        "away_goals": away_score,
+        "kicks": kicks,
+        "won_by_home": home_score > away_score,
+    }
+
+
 async def simulate_draft_match(draft_session_id: int, user_id: int, db: AsyncSession) -> dict:
     draft_session = await _get_session_or_raise(draft_session_id, db, user_id)
     if draft_session.current_round in (DraftRound.ELIMINATED, DraftRound.CHAMPION):
@@ -934,6 +1025,11 @@ async def simulate_draft_match(draft_session_id: int, user_id: int, db: AsyncSes
     penalties = None
     group_table = None
     parallel_match_serialized = None
+    went_to_extra_time = False
+    # Para eliminatorias, puede acabar siendo "win"/"loss" aunque
+    # outcome["result"] fuera "draw", si la prorroga lo decidio -- ver mas
+    # abajo. Para grupos siempre coincide con outcome["result"].
+    final_result = outcome["result"]
     advanced: bool
 
     if is_group:
@@ -953,6 +1049,7 @@ async def simulate_draft_match(draft_session_id: int, user_id: int, db: AsyncSes
         group_opponent_row.points = opponent_points
         group_opponent_row.goals_for = score_away  # goles del rival = los que encaja el usuario
         group_opponent_row.goals_against = score_home  # goles que encaja el rival = los que mete el usuario
+        group_opponent_row.events = _goal_events(narrative["events"])
 
         # Los otros 2 rivales (los que no juegan contra el usuario esta
         # ronda) juegan entre si a la vez -- la misma jornada, dos partidos
@@ -987,15 +1084,70 @@ async def simulate_draft_match(draft_session_id: int, user_id: int, db: AsyncSes
         group_table = _serialize_group_table(ranked, group_complete, other_matches)
         parallel_match_serialized = _serialize_other_matches([parallel_match], group_opponents)[0]
     else:
+        extra_time_score_home = None
+        extra_time_score_away = None
+
         if outcome["result"] == "win":
             advanced = True
         elif outcome["result"] == "loss":
             advanced = False
         else:
-            # Empate en eliminatorias: penaltis, sin ventaja para ningun lado.
-            won_penalties = random.random() < 0.5
-            penalties = {"took_place": True, "won_by_team": won_penalties}
-            advanced = won_penalties
+            # Empate al final del tiempo reglamentario: prorroga antes de
+            # penaltis. La prorroga tiene su propio desenlace (no hereda el
+            # "draw" del reglamentario), con mucha menos probabilidad de
+            # gol -- ver narrative.generate_extra_time_events.
+            went_to_extra_time = True
+            extra_time = generate_extra_time_events(
+                {
+                    "win": outcome["win"],
+                    "draw": outcome["draw"],
+                    "loss": outcome["loss"],
+                    "team": team,
+                    "away_team": opponent["players"],
+                }
+            )
+            narrative["events"] = sorted(
+                narrative["events"] + extra_time["events"], key=lambda event: event["minute"]
+            )
+            extra_time_score_home = score_home + extra_time["score_home"]
+            extra_time_score_away = score_away + extra_time["score_away"]
+            # El marcador que ve el usuario en la animacion (y al "saltar
+            # animacion") es el final: tras la prorroga si la hubo.
+            narrative["score_home"] = extra_time_score_home
+            narrative["score_away"] = extra_time_score_away
+
+            if extra_time_score_home != extra_time_score_away:
+                # La prorroga lo decidio: no hace falta tanda.
+                final_result = "win" if extra_time_score_home > extra_time_score_away else "loss"
+                advanced = extra_time_score_home > extra_time_score_away
+            else:
+                # Sigue el empate tras la prorroga: tanda de penaltis.
+                home_takers = _penalty_taker_order(team)
+                away_takers = _penalty_taker_order(opponent["players"])
+                shootout = _simulate_penalty_shootout(home_takers, away_takers)
+                penalties = {
+                    "took_place": True,
+                    "won_by_team": shootout["won_by_home"],
+                    "home_goals": shootout["home_goals"],
+                    "away_goals": shootout["away_goals"],
+                    "kicks": shootout["kicks"],
+                }
+                advanced = shootout["won_by_home"]
+                final_result = "draw"
+
+            # El texto de cierre de generate_match_events se genero con el
+            # resultado y marcador del minuto 90: si hubo prorroga hay que
+            # regenerarlo con el desenlace y marcador finales, o quedaria
+            # describiendo un empate que ya no es el resultado real.
+            narrative["closing_text"] = closing_text(
+                final_result,
+                extra_time_score_home,
+                extra_time_score_away,
+                outcome["win"],
+                outcome["draw"],
+                outcome["loss"],
+                team_stats["chemistry"],
+            )
 
         if not advanced:
             draft_session.current_round = DraftRound.ELIMINATED
@@ -1003,6 +1155,31 @@ async def simulate_draft_match(draft_session_id: int, user_id: int, db: AsyncSes
             draft_session.current_round = DraftRound.CHAMPION
         else:
             draft_session.current_round = ROUND_ORDER[ROUND_ORDER.index(current_round) + 1]
+
+        # Antes no se guardaba nada de los partidos de eliminatoria: solo
+        # vivian en el estado de React del frontend (matchHistory), que se
+        # pierde al recargar. Ver draft_service.get_tournament_history.
+        db.add(
+            KnockoutMatch(
+                draft_session_id=draft_session_id,
+                round=current_round,
+                opponent_country=opponent["country"],
+                opponent_year=opponent["tournament_year"],
+                result=final_result,
+                home_goals=score_home,
+                away_goals=score_away,
+                went_to_extra_time=went_to_extra_time,
+                extra_time_home_goals=extra_time_score_home,
+                extra_time_away_goals=extra_time_score_away,
+                penalties_took_place=penalties is not None,
+                penalties_won=penalties["won_by_team"] if penalties else None,
+                penalty_home_goals=penalties["home_goals"] if penalties else None,
+                penalty_away_goals=penalties["away_goals"] if penalties else None,
+                penalty_kicks=penalties["kicks"] if penalties else [],
+                advanced=advanced,
+                events=_goal_events(narrative["events"]),
+            )
+        )
 
     await db.commit()
 
@@ -1015,7 +1192,7 @@ async def simulate_draft_match(draft_session_id: int, user_id: int, db: AsyncSes
         "win": outcome["win"],
         "draw": outcome["draw"],
         "loss": outcome["loss"],
-        "result": outcome["result"],
+        "result": final_result,
         "penalties": penalties,
         "advanced": advanced,
         "round": current_round.value,
@@ -1028,4 +1205,126 @@ async def simulate_draft_match(draft_session_id: int, user_id: int, db: AsyncSes
         # El partido rival-contra-rival que se simulo a la vez que este
         # (ver _simulate_rival_match); null fuera de la fase de grupos.
         "parallel_match": parallel_match_serialized,
+        # Si hubo empate en el tiempo reglamentario de una eliminatoria y
+        # se jugo la prorroga (91-120); siempre False en fase de grupos.
+        "went_to_extra_time": went_to_extra_time,
+    }
+
+
+def _serialize_scorers(events: list[dict], team: str) -> list[dict]:
+    return [
+        {"player_name": event["player_name"], "minute": event["minute"], "type": event["type"]}
+        for event in events
+        if event["team"] == team
+    ]
+
+
+def _serialize_user_group_matches(opponents: list[GroupStageOpponent]) -> list[dict]:
+    """Los partidos del USUARIO en la fase de grupos (hasta 3, los que ya
+    se hayan jugado) -- no los rival-contra-rival, esos ya los devuelve
+    group_table.other_matches con el mismo shape que aqui usa
+    get_tournament_history."""
+    matches = []
+    for opponent in opponents:
+        if not opponent.played:
+            continue
+        # opponent.goals_for/goals_against son del RIVAL (ver
+        # GroupStageOpponent), asi que desde el punto de vista del usuario
+        # van al reves.
+        goals_for = opponent.goals_against
+        goals_against = opponent.goals_for
+        if goals_for > goals_against:
+            result = "win"
+        elif goals_for == goals_against:
+            result = "draw"
+        else:
+            result = "loss"
+        matches.append(
+            {
+                "round": f"group_{opponent.slot}",
+                "opponent": {"country": opponent.country, "tournament_year": opponent.tournament_year},
+                "result": result,
+                "goals_for": goals_for,
+                "goals_against": goals_against,
+                "own_scorers": _serialize_scorers(opponent.events, "home"),
+                "opponent_scorers": _serialize_scorers(opponent.events, "away"),
+            }
+        )
+    return matches
+
+
+async def _knockout_matches_for_session(draft_session_id: int, db: AsyncSession) -> list[KnockoutMatch]:
+    stmt = (
+        select(KnockoutMatch)
+        .where(KnockoutMatch.draft_session_id == draft_session_id)
+        .order_by(KnockoutMatch.id)
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
+def _serialize_knockout_matches(knockout_matches: list[KnockoutMatch]) -> list[dict]:
+    return [
+        {
+            "round": match.round.value,
+            "opponent": {"country": match.opponent_country, "tournament_year": match.opponent_year},
+            "result": match.result,
+            "goals_for": match.home_goals,
+            "goals_against": match.away_goals,
+            "went_to_extra_time": match.went_to_extra_time,
+            "extra_time_goals_for": match.extra_time_home_goals,
+            "extra_time_goals_against": match.extra_time_away_goals,
+            "penalties": (
+                {
+                    "took_place": True,
+                    "won_by_team": match.penalties_won,
+                    "home_goals": match.penalty_home_goals,
+                    "away_goals": match.penalty_away_goals,
+                    "kicks": match.penalty_kicks,
+                }
+                if match.penalties_took_place
+                else None
+            ),
+            "advanced": match.advanced,
+            "own_scorers": _serialize_scorers(match.events, "home"),
+            "opponent_scorers": _serialize_scorers(match.events, "away"),
+        }
+        for match in knockout_matches
+    ]
+
+
+async def get_tournament_history(draft_session_id: int, user_id: int, db: AsyncSession) -> dict:
+    """Historial completo del torneo para la pantalla de resumen final
+    (TournamentSummary): los 3 partidos de grupos del usuario + los 3
+    rival-contra-rival + la tabla final, y las eliminatorias jugadas.
+    Pensada para llamarse una vez el torneo ha terminado (current_round
+    eliminated/champion), pero no lo exige: devuelve lo que haya, tambien
+    a medio torneo."""
+    draft_session = await _get_session_or_raise(draft_session_id, db, user_id)
+
+    opponents = await _group_opponents_for_session(draft_session_id, db)
+    rival_matches = await _rival_matches_for_session(draft_session_id, db)
+    group_complete = len(opponents) == 3 and all(o.played for o in opponents)
+    ranked = _rank_group(draft_session, opponents, rival_matches)
+    other_matches = _serialize_other_matches(rival_matches, opponents)
+    group_table = _serialize_group_table(ranked, group_complete, other_matches)
+    group_matches = _serialize_user_group_matches(opponents)
+
+    knockout_rows = await _knockout_matches_for_session(draft_session_id, db)
+    knockout_matches = _serialize_knockout_matches(knockout_rows)
+
+    is_champion = draft_session.current_round == DraftRound.CHAMPION
+    eliminated_round = None
+    if draft_session.current_round == DraftRound.ELIMINATED:
+        # Si hay eliminatorias jugadas, la ultima (la unica con
+        # advanced=False) es donde cayo; si no hay ninguna, no paso de
+        # grupos.
+        eliminated_round = knockout_rows[-1].round.value if knockout_rows else "group_stage"
+
+    return {
+        "formation": draft_session.formation.value,
+        "is_champion": is_champion,
+        "eliminated_round": eliminated_round,
+        "group_table": group_table,
+        "group_matches": group_matches,
+        "knockout_matches": knockout_matches,
     }

@@ -7,6 +7,12 @@ existen. No usa el modelo. Los goles del rival se atribuyen a jugadores
 reales de esa seleccion/año cuando la tabla players los tiene (ver
 "away_team" en generate_match_events); si no hay datos, cae a un nombre
 generico ("Jugador rival").
+
+generate_match_events cubre el tiempo reglamentario (minutos 5-90).
+generate_extra_time_events, aparte, cubre la prorroga (91-120) que
+draft_service dispara cuando el tiempo reglamentario de una eliminatoria
+termina en empate -- tiene su propio desenlace (no hereda el "draw" del
+reglamentario) y con mucha menos probabilidad de gol.
 """
 
 import random
@@ -15,6 +21,9 @@ MIN_EVENT_MINUTE = 5
 MAX_EVENT_MINUTE = 90
 MIN_CARD_MINUTE = 6
 SECOND_HALF_START = 46
+
+MIN_EXTRA_TIME_MINUTE = 91
+MAX_EXTRA_TIME_MINUTE = 120
 
 # Marcadores posibles segun cuan "convincente" fue el resultado. Se usa la
 # probabilidad del resultado que realmente ocurrio: >=60% -> marcador
@@ -31,6 +40,12 @@ _PENALTY_MISS_CHANCE = 0.25
 _RED_CARD_CHANCE = 0.12  # incluso cumpliendo el resto de condiciones, es rara
 _RED_CARD_PROB_MARGIN = 0.15
 MAX_YELLOW_CARDS = 4
+
+# Prorroga: jugadores cansados, mucha menos probabilidad de gol que en el
+# tiempo reglamentario. Pesos para 0/1/2/3 goles TOTALES entre los dos
+# equipos en los 30 minutos.
+_EXTRA_TIME_GOAL_COUNT_WEIGHTS = [62, 25, 10, 3]
+_EXTRA_TIME_MAX_YELLOW_CARDS = 2
 
 _FALLBACK_RIVAL_SCORER = "Jugador rival"
 _GENERIC_RIVAL_YELLOW = ["Defensa rival", "Centrocampista rival"]
@@ -188,9 +203,12 @@ def _decide_yellow_count(tension: float) -> int:
     return random.choices([0, 1, 2, 3, 4], weights=[10, 20, 25, 25, 20])[0]
 
 
-def _closing_text(
+def closing_text(
     result: str, score_home: int, score_away: int, win: float, draw: float, loss: float, chemistry: dict | None
 ) -> str:
+    """Publica (no interna) porque draft_service la reutiliza para
+    regenerar el texto de cierre cuando la prorroga cambia el resultado
+    y/o el marcador tras generate_match_events (ver generate_extra_time_events)."""
     if result == "win":
         confidence = win
         if confidence >= _DECISIVE_THRESHOLD:
@@ -354,5 +372,73 @@ def generate_match_events(match_data: dict) -> dict:
         "score_home": score_home,
         "score_away": score_away,
         "events": events,
-        "closing_text": _closing_text(result, score_home, score_away, win, draw, loss, chemistry),
+        "closing_text": closing_text(result, score_home, score_away, win, draw, loss, chemistry),
     }
+
+
+def _decide_extra_time_goal_count() -> int:
+    return random.choices([0, 1, 2, 3], weights=_EXTRA_TIME_GOAL_COUNT_WEIGHTS)[0]
+
+
+def generate_extra_time_events(match_data: dict) -> dict:
+    """30 minutos de prorroga (91-120) tras un empate en eliminatorias:
+    mismo sistema de eventos que el tiempo reglamentario -- goleador
+    ponderado por posicion/rating (_pick_scorer), amarillas mayoritariamente
+    para DF/MF (_pick_yellow_recipient) -- pero con mucha menos probabilidad
+    de gol (jugadores cansados) y como mucho 2 amarillas (son 30 minutos,
+    no 90). No hay goles de penalti aqui (esos son los de la tanda si sigue
+    el empate, que se resuelven aparte) ni tarjeta roja: se mantiene
+    deliberadamente mas simple que el tiempo reglamentario.
+
+    match_data: {win, draw, loss, team, away_team} -- sin "result": la
+    prorroga tiene su propio desenlace, no hereda el "draw" del tiempo
+    reglamentario (que es justo lo que hizo falta para llegar aqui).
+    """
+    win = match_data.get("win", 0.0)
+    draw = match_data.get("draw", 0.0)
+    loss = match_data.get("loss", 0.0)
+    team = match_data.get("team", [])
+    away_team = match_data.get("away_team", [])
+
+    used_minutes: set[int] = set()
+    events: list[dict] = []
+    score_home = score_away = 0
+
+    # A que equipo se le atribuye cada gol: se pondera por win/loss
+    # (ignorando el empate, que ya no aplica una vez hay gol de por medio)
+    # para que el favorito original siga siendo el mas probable tambien en
+    # la prorroga -- misma coherencia futbolistica que el resto del
+    # partido.
+    strength_total = win + loss
+    home_goal_probability = (win / strength_total) if strength_total > 0 else 0.5
+
+    for _ in range(_decide_extra_time_goal_count()):
+        minute = _draw_unique_minute(used_minutes, MIN_EXTRA_TIME_MINUTE, MAX_EXTRA_TIME_MINUTE)
+        if minute is None:
+            break
+        team_side = "home" if random.random() < home_goal_probability else "away"
+        scorer = (
+            _pick_scorer(team, "Jugador") if team_side == "home" else _pick_scorer(away_team, _FALLBACK_RIVAL_SCORER)
+        )
+        events.append({"minute": minute, "type": "goal", "team": team_side, "player_name": scorer})
+        if team_side == "home":
+            score_home += 1
+        else:
+            score_away += 1
+
+    tension = _match_tension(win, draw, loss, score_home, score_away)
+    for _ in range(min(_decide_yellow_count(tension), _EXTRA_TIME_MAX_YELLOW_CARDS)):
+        minute = _draw_unique_minute(used_minutes, MIN_EXTRA_TIME_MINUTE, MAX_EXTRA_TIME_MINUTE)
+        if minute is None:
+            break
+        team_side = random.choice(["home", "away"])
+        recipient = (
+            _pick_yellow_recipient(team)
+            if team_side == "home"
+            else random.choice(_GENERIC_RIVAL_YELLOW if random.random() < 0.95 else _GENERIC_RIVAL_YELLOW_RARE)
+        )
+        events.append({"minute": minute, "type": "yellow_card", "team": team_side, "player_name": recipient})
+
+    events.sort(key=lambda event: event["minute"])
+
+    return {"score_home": score_home, "score_away": score_away, "events": events}

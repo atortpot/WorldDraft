@@ -103,13 +103,22 @@ export function ChampionPage() {
             ))}
           </ul>
 
-          <button
-            type="button"
-            onClick={handlePlayAgain}
-            className="rounded-xl bg-gradient-to-b from-amber-300 to-amber-500 px-8 py-4 text-lg font-bold text-amber-950 shadow-lg shadow-amber-950/40 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl"
-          >
-            Jugar otro torneo
-          </button>
+          <div className="flex flex-col items-center gap-3 sm:flex-row">
+            <button
+              type="button"
+              onClick={() => navigate('/tournament/summary')}
+              className="rounded-xl border border-amber-400/40 bg-slate-900/60 px-6 py-4 text-base font-bold text-amber-300 shadow transition-all duration-200 hover:-translate-y-0.5 hover:border-amber-400/70 hover:bg-slate-800"
+            >
+              Ver resumen del torneo
+            </button>
+            <button
+              type="button"
+              onClick={handlePlayAgain}
+              className="rounded-xl bg-gradient-to-b from-amber-300 to-amber-500 px-8 py-4 text-lg font-bold text-amber-950 shadow-lg shadow-amber-950/40 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl"
+            >
+              Jugar otro torneo
+            </button>
+          </div>
         </div>
       </div>
     </div>

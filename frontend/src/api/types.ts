@@ -125,9 +125,20 @@ export interface ActiveDraftSession {
   free_slots: FreeSlot[]
 }
 
+export interface PenaltyKick {
+  team: 'home' | 'away'
+  player_name: string
+  scored: boolean
+}
+
 export interface Penalties {
   took_place: boolean
   won_by_team: boolean
+  home_goals: number
+  away_goals: number
+  // En el orden en que se lanzaron (casa/usuario siempre tira primero en
+  // cada ronda). Ver _simulate_penalty_shootout en el backend.
+  kicks: PenaltyKick[]
 }
 
 export interface ChemistryNationDetail {
@@ -232,4 +243,60 @@ export interface SimulationResult {
   // este (ver _simulate_rival_match en el backend). Solo presente cuando
   // `round` es group_1/2/3; null en eliminatorias.
   parallel_match: GroupOtherMatch | null
+  // Si hubo empate en el tiempo reglamentario de una eliminatoria y se jugo
+  // la prorroga (91-120). Siempre false en fase de grupos. Cuando es true,
+  // narrative.events incluye tambien los eventos de la prorroga (minuto
+  // 91-120) y narrative.score_home/away ya es el marcador FINAL (tras la
+  // prorroga, no el del 90).
+  went_to_extra_time: boolean
+}
+
+export interface Scorer {
+  player_name: string
+  minute: number
+  type: 'goal' | 'penalty'
+}
+
+// Uno de los partidos de grupos DEL USUARIO (hasta 3, group_1/2/3) con
+// goleadores. Los partidos entre los otros rivales del grupo van aparte, en
+// TournamentHistory.group_table.other_matches (sin goleadores: esos
+// partidos no generan narrativa, solo marcador).
+export interface GroupMatchSummary {
+  round: TournamentRoundCode
+  opponent: GroupMatchTeam
+  result: 'win' | 'draw' | 'loss'
+  goals_for: number
+  goals_against: number
+  own_scorers: Scorer[]
+  opponent_scorers: Scorer[]
+}
+
+export interface KnockoutMatchSummary {
+  round: TournamentRoundCode
+  opponent: GroupMatchTeam
+  // Resultado FINAL (tras prorroga si la hubo); solo sigue siendo "draw"
+  // si ademas hizo falta la tanda de penaltis.
+  result: 'win' | 'draw' | 'loss'
+  // Marcador al final del tiempo reglamentario (minuto 90).
+  goals_for: number
+  goals_against: number
+  went_to_extra_time: boolean
+  // Marcador al final de la prorroga (minuto 120); null si no hubo.
+  extra_time_goals_for: number | null
+  extra_time_goals_against: number | null
+  penalties: Penalties | null
+  advanced: boolean
+  own_scorers: Scorer[]
+  opponent_scorers: Scorer[]
+}
+
+export interface TournamentHistory {
+  formation: FormationName
+  is_champion: boolean
+  // "group_stage" si no llego a jugar ninguna eliminatoria; si no, la
+  // ronda concreta en la que cayo. Null si is_champion.
+  eliminated_round: string | null
+  group_table: GroupTable
+  group_matches: GroupMatchSummary[]
+  knockout_matches: KnockoutMatchSummary[]
 }

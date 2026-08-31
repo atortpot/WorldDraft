@@ -8,6 +8,7 @@ import type {
   RollResult,
   SimulationResult,
   TeamMember,
+  TournamentHistory,
 } from './types'
 
 // Rutas relativas: el proxy de Vite (vite.config.ts) las reenvia a la API
@@ -79,6 +80,11 @@ export async function simulateMatch(sessionId: number): Promise<SimulationResult
 
 export async function getGroupTable(sessionId: number): Promise<GroupTable> {
   const { data } = await api.get<GroupTable>(`/game/draft/${sessionId}/group`)
+  return data
+}
+
+export async function getTournamentHistory(sessionId: number): Promise<TournamentHistory> {
+  const { data } = await api.get<TournamentHistory>(`/game/draft/${sessionId}/history`)
   return data
 }
 

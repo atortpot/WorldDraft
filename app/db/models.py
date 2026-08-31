@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import Float, ForeignKey, String, UniqueConstraint
+from sqlalchemy import JSON, Float, ForeignKey, String, UniqueConstraint
 from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -194,6 +194,13 @@ class GroupStageOpponent(Base):
     points: Mapped[int] = mapped_column(default=0, nullable=False)
     goals_for: Mapped[int] = mapped_column(default=0, nullable=False)
     goals_against: Mapped[int] = mapped_column(default=0, nullable=False)
+    # Eventos de gol (tipo "goal"/"penalty", con minuto/equipo/jugador) del
+    # partido del usuario contra este rival, tal como los genero
+    # narrative.generate_match_events -- se guardan para poder reconstruir
+    # "goleadores con sus minutos" en GET /history despues de jugado, ya
+    # que la narrativa en si no se persiste en ningun otro sitio. Lista
+    # vacia mientras el partido no se ha jugado.
+    events: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
 
     draft_session: Mapped["DraftSession"] = relationship(back_populates="group_opponents")
 
@@ -219,6 +226,53 @@ class GroupStageRivalMatch(Base):
     away_opponent_id: Mapped[int] = mapped_column(ForeignKey("group_stage_opponents.id"), nullable=False)
     home_goals: Mapped[int] = mapped_column(nullable=False)
     away_goals: Mapped[int] = mapped_column(nullable=False)
+
+
+class KnockoutMatch(Base):
+    """Un partido de eliminatoria directa (round_of_16/quarter_final/
+    semi_final/final) ya jugado. No existia ninguna persistencia de estos
+    partidos hasta GET /history (ver draft_service.get_tournament_history):
+    antes solo vivian en el estado de React del frontend (DraftContext.
+    matchHistory), que se pierde al recargar la pagina.
+
+    No reutiliza la tabla legacy TournamentMatch (definida mas abajo): esa
+    usa un TournamentRound/MatchResult que no encajan con las 7 rondas y el
+    resultado win/draw/loss reales del torneo, y ademas nunca llego a
+    escribirse desde ningun sitio."""
+
+    __tablename__ = "knockout_matches"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    draft_session_id: Mapped[int] = mapped_column(ForeignKey("draft_sessions.id"), nullable=False)
+    round: Mapped[DraftRound] = mapped_column(SqlEnum(DraftRound, name="draft_round"), nullable=False)
+    opponent_country: Mapped[str] = mapped_column(String(100), nullable=False)
+    opponent_year: Mapped[int] = mapped_column(nullable=False)
+    # Resultado FINAL del partido: si la prorroga lo decidio, ya es
+    # "win"/"loss" con ese resultado (no el "draw" del tiempo reglamentario
+    # que hizo falta para llegar a la prorroga); solo sigue siendo "draw"
+    # si ademas hizo falta la tanda de penaltis.
+    result: Mapped[str] = mapped_column(String(10), nullable=False)
+    # Marcador al final del tiempo reglamentario (minuto 90).
+    home_goals: Mapped[int] = mapped_column(nullable=False)
+    away_goals: Mapped[int] = mapped_column(nullable=False)
+    went_to_extra_time: Mapped[bool] = mapped_column(default=False, nullable=False)
+    # Marcador al final de la prorroga (minuto 120); null si no hubo.
+    extra_time_home_goals: Mapped[int | None] = mapped_column(nullable=True)
+    extra_time_away_goals: Mapped[int | None] = mapped_column(nullable=True)
+    penalties_took_place: Mapped[bool] = mapped_column(default=False, nullable=False)
+    # Null si no hubo tanda; si la hubo, si la gano el usuario.
+    penalties_won: Mapped[bool | None] = mapped_column(nullable=True)
+    # Marcador de la tanda (p.ej. 4-3); null si no hubo tanda.
+    penalty_home_goals: Mapped[int | None] = mapped_column(nullable=True)
+    penalty_away_goals: Mapped[int | None] = mapped_column(nullable=True)
+    # Lista de {team: "home"|"away", player_name, scored: bool} en el orden
+    # en que se lanzaron; lista vacia si no hubo tanda. Ver
+    # draft_service._simulate_penalty_shootout.
+    penalty_kicks: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    advanced: Mapped[bool] = mapped_column(nullable=False)
+    # Mismo formato que GroupStageOpponent.events.
+    events: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
 
 
 class TournamentMatch(Base):

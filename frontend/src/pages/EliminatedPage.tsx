@@ -70,13 +70,22 @@ export function EliminatedPage() {
             . {roundsCleared} de 7 partidos superados.
           </p>
 
-          <button
-            type="button"
-            onClick={handlePlayAgain}
-            className="rounded-xl bg-gradient-to-b from-emerald-400 to-emerald-600 px-8 py-4 text-lg font-bold text-emerald-950 shadow-lg shadow-emerald-950/40 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl"
-          >
-            Jugar otro torneo
-          </button>
+          <div className="flex flex-col items-center gap-3 sm:flex-row">
+            <button
+              type="button"
+              onClick={() => navigate('/tournament/summary')}
+              className="rounded-xl border border-slate-700 bg-slate-900/60 px-6 py-4 text-base font-bold text-slate-200 shadow transition-all duration-200 hover:-translate-y-0.5 hover:border-slate-500 hover:bg-slate-800"
+            >
+              Ver resumen del torneo
+            </button>
+            <button
+              type="button"
+              onClick={handlePlayAgain}
+              className="rounded-xl bg-gradient-to-b from-emerald-400 to-emerald-600 px-8 py-4 text-lg font-bold text-emerald-950 shadow-lg shadow-emerald-950/40 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl"
+            >
+              Jugar otro torneo
+            </button>
+          </div>
         </div>
       </div>
     </div>
