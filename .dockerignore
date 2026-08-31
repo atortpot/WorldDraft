@@ -1,0 +1,31 @@
+# Backend (Dockerfile en la raiz): reduce el contexto de build a lo que
+# realmente hace falta. El Dockerfile solo copia rutas explicitas (no hace
+# `COPY . .`), asi que esto es sobre todo para no subir 250+MB de .venv/
+# node_modules/data/.git al daemon de Docker en cada build.
+
+.venv/
+__pycache__/
+*.py[oc]
+
+.git/
+.github/
+
+frontend/
+node_modules/
+
+# data/ esta git-ignorada y el Dockerfile solo copia los 2 CSV que la app
+# necesita en tiempo de ejecucion (ver comentario en Dockerfile); el resto
+# (mas pesado, solo para scripts/ de import puntual) no debe entrar al
+# contexto de build. Se excluye el CONTENIDO (data/*), no el directorio en
+# si -- Docker no permite reincluir un fichero cuyo directorio padre esta
+# excluido, asi que las negaciones de abajo solo funcionan si no se excluye
+# "data/" a secas.
+data/*
+!data/WorldCupMatches.csv
+!data/fifa_ranking-2024-06-20.csv
+
+scripts/
+*.db
+.env
+.env.*
+!.env.example

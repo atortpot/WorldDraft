@@ -11,13 +11,17 @@ import type {
   TournamentHistory,
 } from './types'
 
-// Rutas relativas: el proxy de Vite (vite.config.ts) las reenvia a la API
-// FastAPI en http://localhost:8000 durante el desarrollo.
+// En desarrollo, VITE_API_URL no esta definida: baseURL queda '' y las
+// rutas relativas las reenvia el proxy de Vite (vite.config.ts) a la API
+// FastAPI en http://localhost:8000. En produccion, VITE_API_URL apunta a
+// la URL publica del servicio backend en Railway (se incrusta en el
+// bundle en tiempo de BUILD, ver frontend/Dockerfile) porque frontend y
+// backend son dos servicios en dominios distintos, sin proxy entre ellos.
 // withCredentials: true para que el navegador mande la cookie httpOnly de
 // sesion (worlddraftauth) en cada peticion -- la persistencia de sesion
 // depende enteramente de esa cookie, el frontend ya no gestiona ningun
 // token en memoria ni cabecera Authorization.
-const api = axios.create({ withCredentials: true })
+const api = axios.create({ baseURL: import.meta.env.VITE_API_URL || '', withCredentials: true })
 
 export async function register(email: string, password: string): Promise<void> {
   await api.post('/auth/register', { email, password })
