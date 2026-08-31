@@ -13,8 +13,18 @@ wheels/
 .env
 *.db
 
-# Datasets locales (CSV pesados, no se versionan)
-data/
+# Datasets locales (CSV pesados o de datos sensibles, no se versionan).
+# Excepcion: los 2 CSV que el backend lee EN TIEMPO DE EJECUCION (no solo
+# en los scripts de import puntual de scripts/) -- sorteo de rivales por
+# fuerza historica (app/game/draft_service.py) y ranking FIFA para las
+# stats de simulacion (app/model/fifa_data.py). El Dockerfile los copia
+# explicitamente; sin la excepcion, Railway clona el repo sin ellos y el
+# build falla ahi. Se excluye el CONTENIDO (data/*), no el directorio en
+# si -- Git no permite reincluir un fichero cuyo directorio padre esta
+# excluido, asi que las negaciones de abajo solo funcionan asi.
+data/*
+!data/WorldCupMatches.csv
+!data/fifa_ranking-2024-06-20.csv
 
 # Modelos entrenados
 models/
